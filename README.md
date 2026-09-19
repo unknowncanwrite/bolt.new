@@ -200,6 +200,82 @@ This option requires Docker and is great when you want an isolated environment o
 
    When the container starts it runs `pnpm run dockerstart`, which in turn executes `bindings.sh` to pass Cloudflare bindings through Wrangler. You can override this command in `docker-compose.yaml` if you need a different startup routine.
 
+#### Deploying bolt.diy itself (Render, Cloudflare Pages, Coolify)
+
+Two things are worth separating: **where bolt.diy is hosted** (this section) and
+**where the apps it generates are deployed** (Vercel/Netlify/Supabase, driven by
+the tokens in your `.env`). Hosting the app needs Node 20+ *or* Docker, and the
+host must set `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` or the
+generated apps will not boot inside the workbench preview.
+
+**Render — Docker runtime.** Render cannot pass `--target` to `docker build`, so
+what a plain build ships is whatever stage is last in `Dockerfile`: the
+production stage (`bolt-ai-production`) deliberately sits there, and
+`development` comes before it. The settings that matter:
+
+| Field | Value |
+| ----- | ----- |
+| Runtime | **Docker** |
+| Dockerfile Path | `./Dockerfile` |
+| Region | any |
+| Instance | **2 GB or more** (`plan: standard` in `render.yaml`) |
+| Health check path | `/` |
+
+There is no Build/Start command to fill in for the Docker runtime: the Dockerfile
+does both (install + `NODE_OPTIONS=--max-old-space-size=4096 pnpm run build`, then
+`pnpm run dockerstart`). Environment variables (`DASHSCOPE_API_KEY`,
+`XKIRO_API_KEY`, `VERCEL_TOKEN`, `DASHSCOPE_BASE_URL`, …) go in the dashboard as
+**Secrets**; `render.yaml` pre-declares them, so a Blueprint deploy picks up the
+whole configuration from this repo.
+
+Then, in order:
+
+- **512 MB is not enough.** The SSR server gets OOM-killed a few seconds after
+  boot, and Render turns that into a restart loop that looks like a broken build
+  (`Out of memory (used over 512Mi)`, then `ELIFECYCLE Command failed`).
+- **Only variables listed in `worker-configuration.d.ts` reach the server.** The
+  image has no `.env.local` (it is `.dockerignore`d), so `bindings.sh` falls back
+  to grepping that interface for names and forwarding them as `wrangler
+  --binding` flags. A key that is set in the dashboard but missing there is
+  silently dropped and the provider reports "Missing API Key". Every server-side
+  provider variable is listed there; add yours when you add a provider.
+- **Never name a secret `VITE_*`.** Anything with that prefix is inlined into the
+  public browser bundle at build time. `VITE_DEFAULT_PROVIDER` and
+  `VITE_DEFAULT_MODEL` are public preferences and are build-time only, so on a
+  Docker host they can't be changed with a runtime env var — set the provider and
+  model once in the in-app Settings instead (it persists per browser).
+
+`dockerstart` binds `${PORT:-5173}` on `${HOST:-0.0.0.0}`, so Render's injected
+`PORT` is honoured and the container's `HEALTHCHECK` probes the same port;
+`docker-compose.yaml` still maps `5173:5173` and needs nothing extra.
+
+**Cloudflare Pages — the zero-maintenance option.** It is what `pnpm run deploy`
+targets (`wrangler pages deploy ./build/client`), the handler already lives in
+`functions/[[path]].ts`, and Pages lets you set response headers (WebContainer's
+COOP/COEP) in `public/_headers` or the dashboard:
+
+```bash
+CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… pnpm run deploy   # project: bolt
+```
+
+Put `DASHSCOPE_API_KEY`, `XKIRO_API_KEY`, `VERCEL_TOKEN` and friends in *Pages →
+Settings → Environment variables → Secrets*, and the `VITE_*` ones under *Build
+& deployment → Variables* (they are compiled in at build time).
+
+**Vercel/Netlify's Node runtimes are not wired up here** — no
+`vercel.json`/`netlify.toml` and no Node server entry point, because the SSR
+bundle imports `server-entry.js`, which only exists under a Cloudflare/Docker
+runtime. A plain "Node.js" service on Render fails for the same reason: there is
+nothing to `node`. Docker or Cloudflare is the way; if you want to see the
+production container before deploying, build it locally (image ≈1 GB, so give
+Docker enough memory):
+
+```bash
+docker build --platform=linux/amd64 -t bolt-ai:production --target bolt-ai-production .
+docker run --rm -p 5173:5173 --env-file .env.local -e VITE_PUBLIC_APP_URL=http://localhost:5173 bolt-ai:production
+```
+
+
 ### Option 3: Desktop Application (Electron)
 
 For users who prefer a native desktop experience, bolt.diy is also available as an Electron desktop application:
@@ -351,6 +427,7 @@ Notes:
 * Model lists are discovered live (`GET {base}/models`). Endpoints that do not expose a catalogue fall back to the built-in list, and `DASHSCOPE_API_MODELS` / `XKIRO_API_MODELS` let you pin one explicitly (`id[:context][:maxCompletionTokens];...`).
 * DashScope base URLs are normalized: a trailing slash, a missing `/v1` or a pasted `/chat/completions` path all work.
 * xKiro ids keep their `vendor/` prefix (the bare name 404s) and their labels show context, access tier and price per 1M tokens.
+* Keep the keys on the **server**: the names above are read at runtime by `/api/chat`. A `VITE_`-prefixed copy (e.g. `VITE_DASHSCOPE_API_KEY`) is inlined into the public bundle, so leave those empty. Deployed containers have no `.env.local` at all - see [Deploying bolt.diy itself](#deploying-boltdiy-itself-render-cloudflare-pages-coolify).
 
 ### Deploying generated apps to Vercel
 

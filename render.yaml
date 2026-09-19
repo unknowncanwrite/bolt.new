@@ -1,0 +1,54 @@
+# Render infrastructure-as-code for bolt.diy.
+#
+# Two ways to use this file:
+#   1. Dashboard: New + -> Blueprint -> connect this repo. Render reads this file.
+#   2. Manual: New + -> Web Service with "Runtime: Docker". That works too, as
+#      long as the Dockerfile's LAST stage is the production one (it is) - a
+#      plain `docker build .` has no way to pass --target.
+#
+# Secrets are never stored here: `sync: false` means "leave whatever is set in
+# the dashboard alone" (Dashboard -> Service -> Environment, "Secret" type).
+#
+# Note on VITE_* variables: those are inlined into the browser bundle at build
+# time, so Render's runtime env vars cannot change them. Anything that must be
+# configurable after the build has to be a server-side (non-VITE_) variable, or
+# a `--build-arg`. Never put an API key in a VITE_* variable: it ships to the
+# browser.
+services:
+  - type: web
+    name: bolt-ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./
+    region: singapore
+    # 512 MB is not enough: the SSR server gets OOM-killed a few seconds after
+    # boot and Render restart-loop-redeploys it. 2 GB is the comfortable floor.
+    plan: standard
+    healthCheckPath: /
+    envVars:
+      # ---- Alibaba Cloud Model Studio / DashScope (Qwen, DeepSeek, Kimi, GLM) ----
+      - key: DASHSCOPE_API_KEY
+        sync: false
+      # Dedicated (Singapore) workspace, OpenAI-compatible endpoint, e.g.
+      # https://<workspace-id>.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+      # Leave unset to use the shared international endpoint.
+      - key: DASHSCOPE_BASE_URL
+        sync: false
+
+      # ---- xKiro ----
+      - key: XKIRO_API_KEY
+        sync: false
+      - key: XKIRO_BASE_URL
+        value: https://api.xkiro.com/v1
+
+      # ---- Vercel: lets generated apps deploy without touching the Deploy menu ----
+      - key: VERCEL_TOKEN
+        sync: false
+
+      # ---- optional extras ----
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: VITE_LOG_LEVEL
+        value: info

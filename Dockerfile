@@ -17,6 +17,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
 ARG VITE_PUBLIC_APP_URL
 ENV VITE_PUBLIC_APP_URL=${VITE_PUBLIC_APP_URL}
 
+# Optional build-time UI defaults (Vite inlines VITE_* at build time, so these
+# can only be ARGs here, never runtime env vars).
+ARG VITE_DEFAULT_PROVIDER
+ARG VITE_DEFAULT_MODEL
+ENV VITE_DEFAULT_PROVIDER=${VITE_DEFAULT_PROVIDER} \
+    VITE_DEFAULT_MODEL=${VITE_DEFAULT_MODEL}
+
 # Install deps efficiently
 COPY package.json pnpm-lock.yaml* ./
 RUN pnpm fetch
@@ -36,11 +43,36 @@ FROM build AS prod-deps
 RUN pnpm prune --prod --ignore-scripts
 
 
+# ---- development stage ----
+FROM build AS development
+
+# Non-sensitive development arguments
+ARG VITE_LOG_LEVEL=debug
+ARG DEFAULT_NUM_CTX
+
+# Set non-sensitive environment variables for development
+ENV VITE_LOG_LEVEL=${VITE_LOG_LEVEL} \
+    DEFAULT_NUM_CTX=${DEFAULT_NUM_CTX} \
+    RUNNING_IN_DOCKER=true
+
+# Note: API keys should be provided at runtime via docker run -e or docker-compose
+# Example: docker run -e OPENAI_API_KEY=your_key_here ...
+
+RUN mkdir -p /app/run
+CMD ["pnpm", "run", "dev", "--host"]
+
+
 # ---- production stage ----
+# This stage is intentionally LAST. Hosting platforms that run a plain
+# `docker build .` (Render, Fly, Coolify, ...) do not pass --target, so the last
+# stage decides what they ship. With `development` last they were shipping a
+# Vite dev server to production, which OOMs on small instances.
 FROM prod-deps AS bolt-ai-production
 WORKDIR /app
 
 ENV NODE_ENV=production
+# Default port/host; both are overridable at runtime so platforms that assign a
+# port (Render injects PORT=10000) work without a rebuild.
 ENV PORT=5173
 ENV HOST=0.0.0.0
 
@@ -66,6 +98,14 @@ COPY --from=prod-deps /app/build /app/build
 COPY --from=prod-deps /app/node_modules /app/node_modules
 COPY --from=prod-deps /app/package.json /app/package.json
 COPY --from=prod-deps /app/bindings.sh /app/bindings.sh
+# bindings.sh greps this file for the names to forward when no .env.local exists
+COPY --from=prod-deps /app/worker-configuration.d.ts /app/worker-configuration.d.ts
+# `wrangler pages dev ./build/client` has no Node server entry point of its own:
+# every request is routed through the Pages Functions catch-all in ./functions,
+# which imports ../build/server. Without it (and without the compat flags in
+# wrangler.toml) the container boots but answers 404.
+COPY --from=prod-deps /app/functions /app/functions
+COPY --from=prod-deps /app/wrangler.toml /app/wrangler.toml
 
 # Pre-configure wrangler to disable metrics
 RUN mkdir -p /root/.config/.wrangler && \
@@ -74,30 +114,16 @@ RUN mkdir -p /root/.config/.wrangler && \
 # Make bindings script executable
 RUN chmod +x /app/bindings.sh
 
+# `start`/`dockerstart` shell out to the wrangler CLI, but wrangler is a
+# devDependency, so `pnpm prune --prod` above removed it. Re-add just that one
+# package, otherwise the production image dies with "wrangler: not found".
+RUN pnpm add --prod --ignore-scripts wrangler@4.44.0
+
 EXPOSE 5173
 
-# Healthcheck for deployment platforms
+# Healthcheck for deployment platforms (shell form so $PORT is read at runtime)
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
-  CMD curl -fsS http://localhost:5173/ || exit 1
+  CMD curl -fsS "http://localhost:${PORT:-5173}/" || exit 1
 
 # Start using dockerstart script with Wrangler
 CMD ["pnpm", "run", "dockerstart"]
-
-
-# ---- development stage ----
-FROM build AS development
-
-# Non-sensitive development arguments
-ARG VITE_LOG_LEVEL=debug
-ARG DEFAULT_NUM_CTX
-
-# Set non-sensitive environment variables for development
-ENV VITE_LOG_LEVEL=${VITE_LOG_LEVEL} \
-    DEFAULT_NUM_CTX=${DEFAULT_NUM_CTX} \
-    RUNNING_IN_DOCKER=true
-
-# Note: API keys should be provided at runtime via docker run -e or docker-compose
-# Example: docker run -e OPENAI_API_KEY=your_key_here ...
-
-RUN mkdir -p /app/run
-CMD ["pnpm", "run", "dev", "--host"]

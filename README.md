@@ -204,9 +204,13 @@ This option requires Docker and is great when you want an isolated environment o
 
 Two things are worth separating: **where bolt.diy is hosted** (this section) and
 **where the apps it generates are deployed** (Vercel/Netlify/Supabase, driven by
-the tokens in your `.env`). Hosting the app needs Node 20+ *or* Docker, and the
-host must set `Cross-Origin-Opener-Policy`/`Cross-Origin-Embedder-Policy` or the
-generated apps will not boot inside the workbench preview.
+the tokens in your `.env`). Hosting needs Node 20+ *or* Docker, and nothing else:
+the cross-origin isolation WebContainer requires (`Cross-Origin-Opener-Policy:
+same-origin` + `Cross-Origin-Embedder-Policy: require-corp`) is set by the app
+itself on every SSR response in `app/entry.server.tsx`, so there is no proxy or
+hosting-console step to remember. (Cosmetic side effect of `require-corp`: the
+`cdn.simpleicons.org` logos in the Deploy menu can render blank, since that CDN
+sends no `Cross-Origin-Resource-Policy`.)
 
 **Render — Docker runtime.** Render cannot pass `--target` to `docker build`, so
 what a plain build ships is whatever stage is last in `Dockerfile`: the
@@ -233,6 +237,12 @@ Then, in order:
 - **512 MB is not enough.** The SSR server gets OOM-killed a few seconds after
   boot, and Render turns that into a restart loop that looks like a broken build
   (`Out of memory (used over 512Mi)`, then `ELIFECYCLE Command failed`).
+- **The image keeps `devDependencies`.** `dockerstart` runs the `wrangler` CLI, and
+  wrangler is a devDependency, so the usual `pnpm prune --prod` slimming produces
+  a container that exits at startup with `sh: 1: wrangler: not found`. The
+  production stage therefore branches off the build stage unpruned, and runs
+  `./node_modules/.bin/wrangler --version` so a missing runtime server fails the
+  image build loudly instead of crash-looping on the platform.
 - **Only variables listed in `worker-configuration.d.ts` reach the server.** The
   image has no `.env.local` (it is `.dockerignore`d), so `bindings.sh` falls back
   to grepping that interface for names and forwarding them as `wrangler
@@ -262,13 +272,14 @@ Put `DASHSCOPE_API_KEY`, `XKIRO_API_KEY`, `VERCEL_TOKEN` and friends in *Pages �
 Settings → Environment variables → Secrets*, and the `VITE_*` ones under *Build
 & deployment → Variables* (they are compiled in at build time).
 
-**Vercel/Netlify's Node runtimes are not wired up here** — no
-`vercel.json`/`netlify.toml` and no Node server entry point, because the SSR
-bundle imports `server-entry.js`, which only exists under a Cloudflare/Docker
-runtime. A plain "Node.js" service on Render fails for the same reason: there is
-nothing to `node`. Docker or Cloudflare is the way; if you want to see the
-production container before deploying, build it locally (image ≈1 GB, so give
-Docker enough memory):
+**Vercel/Netlify's Node runtimes are not wired up here** — there is no
+`vercel.json`/`netlify.toml` and no Node server entry point at all: the SSR entry
+is the Pages Function `functions/[[path]].ts`, which imports `../build/server`
+and only executes under workerd (Cloudflare Pages, or `wrangler pages dev` in the
+container). A plain "Node.js" service on Render fails for the same reason: there
+is nothing to `node`. Docker or Cloudflare is the way; if you want to see the
+production container before deploying, build it locally (it carries the full
+dependency tree, so give Docker a generous memory limit):
 
 ```bash
 docker build --platform=linux/amd64 -t bolt-ai:production --target bolt-ai-production .

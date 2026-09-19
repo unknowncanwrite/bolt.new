@@ -30,18 +30,12 @@ RUN pnpm fetch
 
 # Copy source and build
 COPY . .
-# install with dev deps (needed to build)
+# Install with dev deps: they are needed to build *and* to serve. The production
+# stage therefore starts from this stage instead of pruning - see below.
 RUN pnpm install --offline --frozen-lockfile
 
 # Build the Remix app (SSR + client)
 RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm run build
-
-# ---- production dependencies stage ----
-FROM build AS prod-deps
-
-# Keep only production deps for runtime
-RUN pnpm prune --prod --ignore-scripts
-
 
 # ---- development stage ----
 FROM build AS development
@@ -63,11 +57,23 @@ CMD ["pnpm", "run", "dev", "--host"]
 
 
 # ---- production stage ----
-# This stage is intentionally LAST. Hosting platforms that run a plain
-# `docker build .` (Render, Fly, Coolify, ...) do not pass --target, so the last
-# stage decides what they ship. With `development` last they were shipping a
-# Vite dev server to production, which OOMs on small instances.
-FROM prod-deps AS bolt-ai-production
+# Two deliberate choices in this stage:
+#
+# 1. It is LAST. Hosting platforms that run a plain `docker build .` (Render,
+#    Fly, Coolify, Railway) cannot pass --target, so whatever stage is last is
+#    what they ship. With `development` last they were shipping a Vite dev
+#    server to production, which OOMs on small instances within seconds and gets
+#    the deploy restart-looped.
+#
+# 2. It starts FROM build rather than from a `pnpm prune --prod` stage. The
+#    runtime command is `pnpm run dockerstart`, which shells out to the
+#    `wrangler` CLI, and wrangler is a devDependency - pruning devDependencies
+#    produces an image that dies at startup with `sh: 1: wrangler: not found`.
+#    (`pnpm add --prod wrangler` does not rescue it either: with NODE_ENV=
+#    production pnpm reports "Already up to date" and links nothing.) The image
+#    is a few hundred MB larger; a container that boots is worth more than a
+#    small one that does not.
+FROM build AS bolt-ai-production
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -87,42 +93,36 @@ ENV WRANGLER_SEND_METRICS=false \
     RUNNING_IN_DOCKER=true
 
 # Note: API keys should be provided at runtime via docker run -e or docker-compose
-# Example: docker run -e OPENAI_API_KEY=your_key_here ...
+# Example: docker run -e DASHSCOPE_API_KEY=your_key_here ...
 
-# Install curl for healthchecks and copy bindings script
+# Install curl for healthchecks
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
   && rm -rf /var/lib/apt/lists/*
 
-# Copy built files and scripts
-COPY --from=prod-deps /app/build /app/build
-COPY --from=prod-deps /app/node_modules /app/node_modules
-COPY --from=prod-deps /app/package.json /app/package.json
-COPY --from=prod-deps /app/bindings.sh /app/bindings.sh
-# bindings.sh greps this file for the names to forward when no .env.local exists
-COPY --from=prod-deps /app/worker-configuration.d.ts /app/worker-configuration.d.ts
-# `wrangler pages dev ./build/client` has no Node server entry point of its own:
-# every request is routed through the Pages Functions catch-all in ./functions,
-# which imports ../build/server. Without it (and without the compat flags in
-# wrangler.toml) the container boots but answers 404.
-COPY --from=prod-deps /app/functions /app/functions
-COPY --from=prod-deps /app/wrangler.toml /app/wrangler.toml
+# `bindings.sh` greps worker-configuration.d.ts for the names to forward as
+# wrangler bindings when no .env.local exists (always the case in an image, as
+# .env* is .dockerignore'd). Both files must be present at runtime:
+#   - /app/bindings.sh
+#   - /app/worker-configuration.d.ts
+# and `wrangler pages dev ./build/client` has no Node server entry point of its
+# own: every request is routed through the Pages Functions catch-all in
+# /app/functions, which imports ../build/server. All of that is already in this
+# stage; chmod only needs to survive from the source copy.
+RUN chmod +x /app/bindings.sh
 
 # Pre-configure wrangler to disable metrics
 RUN mkdir -p /root/.config/.wrangler && \
     echo '{"enabled":false}' > /root/.config/.wrangler/metrics.json
 
-# Make bindings script executable
-RUN chmod +x /app/bindings.sh
-
-# `start`/`dockerstart` shell out to the wrangler CLI, but wrangler is a
-# devDependency, so `pnpm prune --prod` above removed it. Re-add just that one
-# package, otherwise the production image dies with "wrangler: not found".
-RUN pnpm add --prod --ignore-scripts wrangler@4.44.0
+# Fail the *image build* with a readable error if the runtime server is missing,
+# instead of shipping an image that crash-loops on the platform.
+RUN pnpm exec wrangler --version || ./node_modules/.bin/wrangler --version
 
 EXPOSE 5173
 
-# Healthcheck for deployment platforms (shell form so $PORT is read at runtime)
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
+# Healthcheck for deployment platforms. Shell form so $PORT is read at
+# container start, and a long start-period because wrangler takes ~15s to bind.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=5 \
   CMD curl -fsS "http://localhost:${PORT:-5173}/" || exit 1
 
 # Start using dockerstart script with Wrangler

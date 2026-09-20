@@ -21,8 +21,9 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: ./
     region: singapore
-    # 512 MB is not enough: the SSR server gets OOM-killed a few seconds after
-    # boot and Render restart-loop-redeploys it. 2 GB is the comfortable floor.
+    # 512 MB is not enough (the runtime peaks around 850 MB booting). Render's
+    # Free and $7 Starter tiers are both 512 MB; 2 GB Standard is the first tier
+    # that can host this app. To pay nothing instead, deploy to Cloudflare Pages.
     plan: standard
     healthCheckPath: /
     envVars:

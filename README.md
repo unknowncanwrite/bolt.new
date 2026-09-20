@@ -234,9 +234,15 @@ whole configuration from this repo.
 
 Then, in order:
 
-- **512 MB is not enough.** The SSR server gets OOM-killed a few seconds after
-  boot, and Render turns that into a restart loop that looks like a broken build
-  (`Out of memory (used over 512Mi)`, then `ELIFECYCLE Command failed`).
+- **512 MB is not enough, and Render's $7 tier is still 512 MB.** The runtime is
+  `wrangler pages dev`, i.e. miniflare + workerd inside a Node process. Summed RSS
+  across that tree peaked near 850 MB here while serving a deliberately stubbed
+  `build/server` (shared pages get counted more than once, so read it as an upper
+  bound, not a floor - Render's own OOM kill is the ground truth). Render's ladder
+  is 512 MB Free, 512 MB Starter, then **2 GB Standard**: there is no 1 GB web tier,
+  so moving from Free to Starter changes nothing. Killed mid-boot, the service never
+  binds a port, which is why the log reads `No open ports detected` *before*
+  `Out of memory (used over 512Mi)`.
 - **The image keeps `devDependencies`.** `dockerstart` runs the `wrangler` CLI, and
   wrangler is a devDependency, so the usual `pnpm prune --prod` slimming produces
   a container that exits at startup with `sh: 1: wrangler: not found`. The

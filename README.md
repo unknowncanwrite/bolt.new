@@ -259,6 +259,19 @@ What the free tier still costs you, unchanged by any of this:
   on-the-fly compression, no CDN required.
 - **Build minutes** are capped on the free plan; this project's build takes a
   few minutes of it, so avoid pushing 40 times a day.
+- **The build is the last memory risk, not the runtime.** `remix vite:build` needs
+  a ~2.5 GB heap, and Render does not publish how much RAM its *build* machines
+  get (only the 512 MB runtime is documented). The Dockerfile caps the build at
+  `--max-old-space-size=2560`, the smallest value measured to complete here, so a
+  small builder has the best possible chance. If the build log ends in `Killed`
+  during `remix vite:build`, two free ways around it: bump the plan to Starter,
+  let it build once, then drop back to Free (the image survives the downgrade); or
+  build the image in GitHub Actions - `docker build --target node-runtime .` pushed
+  to GHCR - and point Render at the *Image* runtime instead of the Dockerfile
+  builder. Neither changes a line of app code.
+- **Free hours are per workspace, not per service**: 750 instance-hours a month,
+  and one 24/7 container already spends ~720 of them. Two always-on free services
+  on the same workspace will not both survive the month.
 
 Three things `server.mjs` deliberately reproduces rather than skips, because
 they are what a runtime swap usually silently breaks:

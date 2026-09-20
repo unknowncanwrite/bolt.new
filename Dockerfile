@@ -34,8 +34,14 @@ COPY . .
 # stage therefore starts from this stage instead of pruning - see below.
 RUN pnpm install --offline --frozen-lockfile
 
-# Build the Remix app (SSR + client)
-RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm run build
+# Build the Remix app (SSR + client).
+#
+# 2560 MB is measured, not guessed: this build aborts in V8 at a 1800 MB cap and
+# completes at 2560 MB (the whole build stays under ~3 GB resident here). Render
+# does not document its build-machine RAM, so the smallest cap that provably
+# works is the safest one - a higher cap only raises the ceiling, it never makes
+# the build need less memory. Raise it if your fork grows.
+RUN NODE_OPTIONS=--max-old-space-size=2560 pnpm run build
 
 # ---- development stage ----
 FROM build AS development

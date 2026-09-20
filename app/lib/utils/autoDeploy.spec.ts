@@ -30,11 +30,14 @@ describe('shouldTriggerAutoDeploy', () => {
 });
 
 describe('isAutoDeployEnabled', () => {
-  it('is on by default and only disabled by an explicit false', () => {
-    expect(isAutoDeployEnabled(null)).toBe(true);
-    expect(isAutoDeployEnabled(undefined)).toBe(true);
-    expect(isAutoDeployEnabled('true')).toBe(true);
+  it('is off unless the user asked for it, so finishing a build never publishes', () => {
+    expect(isAutoDeployEnabled(null)).toBe(false);
+    expect(isAutoDeployEnabled(undefined)).toBe(false);
     expect(isAutoDeployEnabled('false')).toBe(false);
+  });
+
+  it('stays on for an explicit opt-in', () => {
+    expect(isAutoDeployEnabled('true')).toBe(true);
   });
 });
 

@@ -8,6 +8,13 @@ import { useMessageParser, usePromptEnhancer, useShortcuts } from '~/lib/hooks';
 import { description, useChatHistory } from '~/lib/persistence';
 import { chatStore } from '~/lib/stores/chat';
 import { workbenchStore } from '~/lib/stores/workbench';
+import { autoFixEnabled, autoFixTracker, recordAutoFixAttempt, resetAutoFixAttempts } from '~/lib/stores/autoFix';
+import {
+  MAX_AUTO_FIX_ATTEMPTS,
+  buildFixRequestMessage,
+  decideAutoFix,
+  errorSignature,
+} from '~/lib/utils/autoFixErrors';
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, PROMPT_COOKIE_KEY, PROVIDER_LIST } from '~/utils/constants';
 import { cubicEasingFn } from '~/utils/easings';
 import { createScopedLogger, renderLogger } from '~/utils/logger';
@@ -86,6 +93,9 @@ export const ChatImpl = memo(
     useShortcuts();
 
     const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const sendMessageRef = useRef<((_event: React.UIEvent, messageInput?: string) => void) | undefined>(undefined);
+    const autoFixEnabledSetting = useStore(autoFixEnabled);
+    const autoFixState = useStore(autoFixTracker);
     const [chatStarted, setChatStarted] = useState(initialMessages.length > 0);
     const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
     const [imageDataList, setImageDataList] = useState<string[]>([]);
@@ -209,6 +219,46 @@ export const ChatImpl = memo(
         storeMessageHistory,
       });
     }, [messages, isLoading, parseMessages]);
+
+    useEffect(() => {
+      sendMessageRef.current = sendMessage;
+    });
+
+    /*
+     * When the generated app throws, tell the model about it instead of waiting for
+     * a click. The gate owns the loop protection - one request per distinct error,
+     * never while the model is already writing, at most MAX_AUTO_FIX_ATTEMPTS per
+     * turn - and when it declines, the alert with its "Ask Bolt" button stays put,
+     * so the human is still the last resort rather than being cut out.
+     */
+    useEffect(() => {
+      if (!actionAlert) {
+        return;
+      }
+
+      const decision = decideAutoFix({
+        alert: actionAlert,
+        enabled: autoFixEnabledSetting,
+        isStreaming: isLoading,
+        attempts: autoFixState.attempts,
+        lastSignature: autoFixState.lastSignature,
+        lastAt: autoFixState.lastAt,
+        now: Date.now(),
+      });
+
+      if (decision.action !== 'auto-fix') {
+        return;
+      }
+
+      recordAutoFixAttempt(errorSignature(actionAlert));
+      workbenchStore.clearAlert();
+
+      toast.info(
+        `Error captured - asking the model to fix it (attempt ${autoFixState.attempts + 1} of ${MAX_AUTO_FIX_ATTEMPTS})`,
+      );
+
+      void sendMessageRef.current?.({} as React.UIEvent, buildFixRequestMessage(actionAlert, { automatic: true }));
+    }, [actionAlert, autoFixEnabledSetting, autoFixState, isLoading]);
 
     const scrollTextArea = () => {
       const textarea = textareaRef.current;
@@ -388,6 +438,15 @@ export const ChatImpl = memo(
 
     const sendMessage = async (_event: React.UIEvent, messageInput?: string) => {
       const messageContent = messageInput || input;
+
+      /*
+       * A message typed by the human is a fresh slate for the automatic-fix budget.
+       * The counter is there to stop the app and the model looping on each other, not
+       * to throttle a person who is steering.
+       */
+      if (!messageInput) {
+        resetAutoFixAttempts();
+      }
 
       if (!messageContent?.trim()) {
         return;

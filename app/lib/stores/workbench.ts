@@ -5,6 +5,8 @@ import type { ActionCallbackData, ArtifactCallbackData } from '~/lib/runtime/mes
 import { webcontainer } from '~/lib/webcontainer';
 import type { ITerminal } from '~/types/terminal';
 import { unreachable } from '~/utils/unreachable';
+import { ALWAYS_RESTART_KEY, isAlwaysRestartEnabled, shouldRestartOnChanges } from '~/lib/utils/devServerRestart';
+import { onFileChanges } from '~/lib/utils/fileChangeBus';
 import { EditorStore } from './editor';
 import { FilesStore, type FileMap } from './files';
 import { PreviewsStore } from './previews';
@@ -57,7 +59,17 @@ export class WorkbenchStore {
   modifiedFiles = new Set<string>();
   artifactIdList: string[] = [];
   #globalExecutionQueue = Promise.resolve();
+
+  /**
+   * HMR replaces this store, and the change bus is module-scoped, so a second
+   * WorkbenchStore would otherwise restart the dev server twice per batch.
+   */
+  #unsubscribeFromFileChanges?: () => void;
+  #fileChangesSubscribed = false;
+
   constructor() {
+    this.#watchFileChanges();
+
     if (import.meta.hot) {
       import.meta.hot.data.artifacts = this.artifacts;
       import.meta.hot.data.unsavedFiles = this.unsavedFiles;
@@ -113,6 +125,68 @@ export class WorkbenchStore {
   get boltTerminal() {
     return this.#terminalStore.boltTerminal;
   }
+
+  /**
+   * Decide, once per settled batch of writes, whether the running app has to be
+   * restarted. Source edits are left to Vite's HMR: restarting for those would
+   * throw away component state and cost seconds for something the browser already
+   * did. Config and dependency changes are the ones with no live path.
+   */
+  #watchFileChanges() {
+    if (this.#fileChangesSubscribed) {
+      return;
+    }
+
+    this.#fileChangesSubscribed = true;
+    this.#unsubscribeFromFileChanges?.();
+    this.#unsubscribeFromFileChanges = onFileChanges((paths) => {
+      this.#handleFileChanges(paths).catch((error) => {
+        console.error('[Workbench] dev server restart check failed', error);
+      });
+    });
+  }
+
+  async #handleFileChanges(paths: string[]) {
+    const relevant = paths.filter((p) => !p.startsWith('.bolt/') && !p.includes('node_modules/'));
+
+    if (relevant.length === 0) {
+      return;
+    }
+
+    const alwaysRestart = isAlwaysRestartEnabled(
+      typeof window === 'undefined' ? null : window.localStorage.getItem(ALWAYS_RESTART_KEY),
+    );
+
+    if (!shouldRestartOnChanges(relevant, { alwaysRestart })) {
+      return;
+    }
+
+    const runners = Object.values(this.artifacts.get())
+      .map((artifact) => artifact?.runner)
+      .filter(Boolean);
+
+    /*
+     * Newest artifact first: when a follow-up prompt rewrote the project, that is
+     * the runner holding the live dev server. `restartDevServer` reports false for
+     * a runner that never started one, so a project where the server is not
+     * running stays untouched rather than getting a surprise boot.
+     */
+    for (let i = runners.length - 1; i >= 0; i--) {
+      const runner = runners[i];
+
+      if (!runner?.hasDevServer) {
+        continue;
+      }
+
+      const restarted = await runner.restartDevServer(`changed ${relevant.slice(0, 3).join(', ')}`);
+
+      if (restarted) {
+        // the container re-emits `server-ready`, which refreshes the preview
+        return;
+      }
+    }
+  }
+
   get alert() {
     return this.actionAlert;
   }

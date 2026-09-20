@@ -3,6 +3,7 @@ import { getEncoding } from 'istextorbinary';
 import { map, type MapStore } from 'nanostores';
 import { Buffer } from 'node:buffer';
 import { path } from '~/utils/path';
+import { notifyFileChange } from '~/lib/utils/fileChangeBus';
 import { bufferWatchEvents } from '~/utils/buffer';
 import { WORK_DIR } from '~/utils/constants';
 import { computeFileModifications } from '~/utils/diff';
@@ -564,6 +565,13 @@ export class FilesStore {
       }
 
       await webcontainer.fs.writeFile(relativePath, content);
+
+      /*
+       * A save from the editor has to reach the same coalescer the artifact runner
+       * uses, otherwise a hand-edited `vite.config.ts` or `.env` never restarts the
+       * dev server and the preview quietly keeps running the old thing.
+       */
+      notifyFileChange(relativePath);
 
       if (!this.#modifiedFiles.has(filePath)) {
         this.#modifiedFiles.set(filePath, oldContent);

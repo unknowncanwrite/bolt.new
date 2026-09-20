@@ -6,7 +6,7 @@
  */
 
 export interface AutoDeployGate {
-  // User has auto-deploy switched on (Settings -> Vercel).
+  // User has explicitly switched auto-deploy on (Settings -> Vercel). Off by default.
   enabled: boolean;
 
   // A Vercel account is reachable, either client-side or through the server token.
@@ -56,9 +56,15 @@ export const AUTO_DEPLOY_SETTLE_MS = 4000;
 /** localStorage key holding the user preference. */
 export const AUTO_DEPLOY_SETTING_KEY = 'vercel_auto_deploy';
 
-/** Whether the preference is on. Absent means on: the feature is opt-out. */
+/**
+ * Whether the preference is on. Absent means **off**: shipping a project to the
+ * internet is a decision, not a side effect of generation finishing, so it happens
+ * when the user clicks Deploy (or opts in under Settings -> Vercel for the people
+ * who want generation and publish fused). An old opt-out value of 'true' keeps
+ * working, and 'false' still means off.
+ */
 export function isAutoDeployEnabled(storedValue: string | null | undefined): boolean {
-  return storedValue !== 'false';
+  return storedValue === 'true';
 }
 
 /** Identity of "this chat" for the once-per-page-view guard. */

@@ -6,6 +6,8 @@ import { createScopedLogger } from '~/utils/logger';
 import { unreachable } from '~/utils/unreachable';
 import type { ActionCallbackData } from './message-parser';
 import { AUTOMATION_ENV, type BoltShell } from '~/utils/shell';
+import { isDevServerCommand } from '~/lib/utils/devServerRestart';
+import { notifyFileChange } from '~/lib/utils/fileChangeBus';
 
 const logger = createScopedLogger('ActionRunner');
 
@@ -73,6 +75,13 @@ export class ActionRunner {
   onSupabaseAlert?: (alert: SupabaseAlert) => void;
   onDeployAlert?: (alert: DeployAlert) => void;
   buildOutput?: { path: string; exitCode: number; output: string };
+
+  /**
+   * The long-running command that serves the preview, remembered so a change to
+   * `vite.config.ts` or `package.json` can restart it. It lives on the runner
+   * because the runner owns the shell the command is still sitting in.
+   */
+  #devServer?: { command: string; action: ActionState };
 
   constructor(
     webcontainerPromise: Promise<WebContainer>,
@@ -267,6 +276,14 @@ export class ActionRunner {
       action.content = validationResult.modifiedCommand;
     }
 
+    /*
+     * Record before running it: if the server dies on boot we still want to know
+     * what command brings it back.
+     */
+    if (isDevServerCommand(action.content)) {
+      this.#devServer = { command: action.content, action };
+    }
+
     const resp = await shell.executeCommand(this.runnerId.get(), action.content, () => {
       logger.debug(`[${action.type}]:Aborting Action\n\n`, action);
       action.abort();
@@ -294,6 +311,8 @@ export class ActionRunner {
     if (!shell || !shell.terminal || !shell.process) {
       unreachable('Shell terminal not found');
     }
+
+    this.#devServer = { command: action.content, action };
 
     const resp = await shell.executeCommand(this.runnerId.get(), action.content, () => {
       logger.debug(`[${action.type}]:Aborting Action\n\n`, action);
@@ -333,9 +352,62 @@ export class ActionRunner {
     try {
       await webcontainer.fs.writeFile(relativePath, action.content);
       logger.debug(`File written ${relativePath}`);
+
+      /*
+       * the workbench coalesces these and restarts the preview when the write
+       * actually needs one (see `fileChangeBus`)
+       */
+      notifyFileChange(relativePath);
     } catch (error) {
       logger.error('Failed to write file\n\n', error);
     }
+  }
+
+  /** Whether this artifact has a dev server whose command we can re-run. */
+  get hasDevServer() {
+    return this.#devServer !== undefined;
+  }
+
+  /**
+   * Bring the preview's dev server back up after a change that Vite cannot pick
+   * up live. `executeCommand` interrupts whatever is running first (Ctrl+C), so
+   * re-issuing the command *is* the restart - no process handle needed.
+   *
+   * The previous command then exits with a signal, which would normally raise the
+   * "Dev Server Failed" alert and, with auto-fix on, send the model a bogus
+   * error. Aborting the action first makes both paths ignore it, because
+   * `#executeAction` returns early for an aborted action.
+   */
+  async restartDevServer(reason: string): Promise<boolean> {
+    const devServer = this.#devServer;
+
+    if (!devServer) {
+      return false;
+    }
+
+    const shell = this.#shellTerminal();
+
+    if (!shell) {
+      return false;
+    }
+
+    await shell.ready();
+
+    // marks the aborted action's exit as expected, so no false "Dev Server Failed"
+    devServer.action.abort();
+
+    logger.info(`Restarting dev server (${reason}): ${devServer.command}`);
+
+    // never resolves for a healthy dev server, so it is intentionally not awaited
+    shell
+      .executeCommand(this.runnerId.get(), devServer.command, () => {
+        logger.debug('Aborting restarted dev server');
+      })
+      .catch((error) => {
+        logger.error('Failed to restart dev server', error);
+      });
+
+    return true;
   }
 
   #updateAction(id: string, newState: ActionStateUpdate) {

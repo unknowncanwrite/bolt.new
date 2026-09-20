@@ -47,6 +47,7 @@ project, please check the [project management guide](./PROJECT.md) to get starte
 - **19+ AI Provider Integrations** - OpenAI, Anthropic, Google, Groq, xAI, DeepSeek, Mistral, Cohere, Together, Perplexity, HuggingFace, Ollama, LM Studio, OpenRouter, Moonshot, Hyperbolic, GitHub Models, Amazon Bedrock, OpenAI-like
 - **Electron Desktop App** - Native desktop experience with full functionality
 - **Advanced Deployment Options** - Netlify, Vercel, and GitHub Pages deployment
+- **Autonomous preview lifecycle** - dev server restarts when a config change needs it, captured errors are auto-fixed by the model, and deploys only happen on click
 - **Supabase Integration** - Database management and query capabilities
 - **Data Visualization & Analysis** - Charts, graphs, and data analysis tools
 - **MCP (Model Context Protocol)** - Enhanced AI tool integration
@@ -87,6 +88,35 @@ project, please check the [project management guide](./PROJECT.md) to get starte
 - **Diff view** to see changes made by the AI.
 - **Supabase integration** for database management and queries.
 - **Expo app creation** for React Native development.
+
+### Generated-app behaviour
+
+Three defaults are tuned for someone who is not going to read the terminal:
+
+- **Nothing deploys on its own.** Finishing a generation publishes nothing. A
+  Vercel deploy happens when you press **Deploy**. (Settings → Vercel has an
+  opt-in "auto-deploy after generation" for people who want the two fused; it
+  defaults to off, because shipping is a decision, not a side effect.)
+- **A change restarts the app when a restart is actually needed.** Writes to
+  `package.json`, a lockfile, `.env*`, `tsconfig*`, or `vite.config.*` (plus the
+  Next/Nuxt/Astro/Svelte equivalents) restart the dev server, and the preview
+  reloads when it reports ready again. Ordinary source edits are left to Vite's
+  hot reload — restarting for those throws away component state and costs
+  seconds to do what the browser already did. Want the blunt version?
+  `localStorage.setItem('restart_on_every_change', 'true')`.
+- **Errors go to the model without asking.** A failed command, a dev server that
+  dies on boot, or an exception in the preview is handed straight to the model to
+  fix, instead of parking a stack trace behind an "Ask Bolt" button. Loop
+  protection is part of it: one request per distinct error, never while the model
+  is already writing, three attempts per turn, and the manual alert comes back
+  once the budget is spent. To restore click-to-ask:
+  `localStorage.setItem('chat_error_autofix', 'false')`.
+
+Automated shells also no longer block on npm's `Need to install the following
+packages: vite … Ok to proceed? (y)` prompt — the agent's shell and the preview
+build run with `npm_config_yes=true`, while the terminal you type in keeps
+prompting, because you may want to answer it.
+
 
 ## Setup
 

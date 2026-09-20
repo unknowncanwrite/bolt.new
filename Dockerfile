@@ -73,6 +73,10 @@ CMD ["pnpm", "run", "dev", "--host"]
 #    production pnpm reports "Already up to date" and links nothing.) The image
 #    is a few hundred MB larger; a container that boots is worth more than a
 #    small one that does not.
+#
+# (It used to be the last stage. It no longer is - `node-runtime` below is, so
+# that a plain `docker build .` ships the low-memory runtime. Compose files that
+# say `target: bolt-ai-production` still get the wrangler/Pages simulator.)
 FROM build AS bolt-ai-production
 WORKDIR /app
 
@@ -127,3 +131,47 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=5 \
 
 # Start using dockerstart script with Wrangler
 CMD ["pnpm", "run", "dockerstart"]
+
+
+# ---- node-runtime stage (LAST: this is what `docker build .` ships) ----
+# Why this stage exists: the production image above runs the app inside
+# `wrangler pages dev`, i.e. Cloudflare's workerd harness, which costs ~850 MB
+# of RSS at idle. That is the only reason this repo could not fit Render's free
+# 512 MB tier - the *app* needs far less. `server.mjs` serves the exact same
+# `pnpm run build` output on plain Node V8 and idles at ~110-150 MB, peaking
+# ~270 MB under load, with no feature missing:
+#
+#   - `context.cloudflare.env`  -> runtime process.env (how every /api/* route
+#     resolves keys, so DASHSCOPE_API_KEY & friends work as plain env vars)
+#   - `env.ASSETS.fetch`        -> served straight from build/client, including
+#     the .br/.gz siblings this stage generates so a 0.1 vCPU never compresses
+#   - streaming responses       -> chunked passthrough (LLM tokens arrive live)
+#   - client disconnect         -> AbortController fires request.signal
+#
+# Nothing Cloudflare-specific is left out: no route reads `caches`, `waitUntil`
+# or `cf` (only `context.cloudflare?.env`, which is always optional-chained, so
+# the app degrades the same way here as it does in `pnpm run dev`).
+FROM build AS node-runtime
+WORKDIR /app
+
+ENV NODE_ENV=production
+# Render assigns its own PORT; 0.0.0.0 is required by every container platform.
+ENV PORT=10000
+ENV HOST=0.0.0.0
+
+# Cap the V8 heap so the container stays inside a 512 MB free tier: measured
+# non-heap overhead is ~90 MB, so 320 MB of heap + overhead peaks near 410 MB.
+# Raise it (or clear it) on plans with more RAM.
+ENV NODE_OPTIONS=--max-old-space-size=320
+
+# Same disposable-build trick as the Pages stage, without the Pages coupling:
+# precompress once at build time instead of per request at 0.1 vCPU.
+RUN node scripts/compress-client-assets.mjs
+
+EXPOSE 10000
+
+# No curl (and no apt-get layer): node 22 has fetch built in.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||10000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "server.mjs"]

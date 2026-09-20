@@ -13,6 +13,8 @@
   "scripts": {
     "deploy": "npm run build && wrangler pages deploy",
     "build": "remix vite:build",
+    "build:node": "remix vite:build && node scripts/compress-client-assets.mjs",
+    "start:node": "node server.mjs",
     "dev": "node pre-start.cjs  && remix vite:dev",
     "test": "vitest --run",
     "test:watch": "vitest",

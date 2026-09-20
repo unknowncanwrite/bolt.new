@@ -212,58 +212,89 @@ hosting-console step to remember. (Cosmetic side effect of `require-corp`: the
 `cdn.simpleicons.org` logos in the Deploy menu can render blank, since that CDN
 sends no `Cross-Origin-Resource-Policy`.)
 
-**Render — Docker runtime.** Render cannot pass `--target` to `docker build`, so
-what a plain build ships is whatever stage is last in `Dockerfile`: the
-production stage (`bolt-ai-production`) deliberately sits there, and
-`development` comes before it. The settings that matter:
+**Render — Docker runtime, free tier.** A plain `docker build .` cannot pass
+`--target`, so whatever stage is last in `Dockerfile` is what Render ships. That
+stage is now `node-runtime`: the identical `pnpm run build` output, served by
+`server.mjs` on plain Node V8 instead of Cloudflare's workerd harness. The
+settings:
 
 | Field | Value |
 | ----- | ----- |
 | Runtime | **Docker** |
 | Dockerfile Path | `./Dockerfile` |
 | Region | any |
-| Instance | **2 GB or more** (`plan: standard` in `render.yaml`) |
-| Health check path | `/` |
+| Instance | **Free (512 MB)** is enough now; `plan: free` in `render.yaml` |
+| Health check path | `/` (or `/api/health`) |
 
-There is no Build/Start command to fill in for the Docker runtime: the Dockerfile
-does both (install + `NODE_OPTIONS=--max-old-space-size=4096 pnpm run build`, then
-`pnpm run dockerstart`). Environment variables (`DASHSCOPE_API_KEY`,
-`XKIRO_API_KEY`, `VERCEL_TOKEN`, `DASHSCOPE_BASE_URL`, …) go in the dashboard as
-**Secrets**; `render.yaml` pre-declares them, so a Blueprint deploy picks up the
-whole configuration from this repo.
+There is no Build/Start command to fill in: the Dockerfile does both (install +
+`NODE_OPTIONS=… pnpm run build`, then `node server.mjs`). Environment variables
+(`DASHSCOPE_API_KEY`, `XKIRO_API_KEY`, `VERCEL_TOKEN`, `DASHSCOPE_BASE_URL`, …)
+go in the dashboard as **Secrets**, and with this runtime they are read at
+runtime — change a key in the dashboard and the next request uses it, no rebuild.
+`render.yaml` pre-declares them, so a Blueprint deploy picks up the whole
+configuration from this repo.
 
-Then, in order:
+Why it fits now, measured in this repo:
 
-- **512 MB is not enough, and Render's $7 tier is still 512 MB.** The runtime is
-  `wrangler pages dev`, i.e. miniflare + workerd inside a Node process. Summed RSS
-  across that tree peaked near 850 MB here while serving a deliberately stubbed
-  `build/server` (shared pages get counted more than once, so read it as an upper
-  bound, not a floor - Render's own OOM kill is the ground truth). Render's ladder
-  is 512 MB Free, 512 MB Starter, then **2 GB Standard**: there is no 1 GB web tier,
-  so moving from Free to Starter changes nothing. Killed mid-boot, the service never
-  binds a port, which is why the log reads `No open ports detected` *before*
-  `Out of memory (used over 512Mi)`.
-- **The image keeps `devDependencies`.** `dockerstart` runs the `wrangler` CLI, and
-  wrangler is a devDependency, so the usual `pnpm prune --prod` slimming produces
-  a container that exits at startup with `sh: 1: wrangler: not found`. The
-  production stage therefore branches off the build stage unpruned, and runs
-  `./node_modules/.bin/wrangler --version` so a missing runtime server fails the
-  image build loudly instead of crash-looping on the platform.
-- **Only variables listed in `worker-configuration.d.ts` reach the server.** The
-  image has no `.env.local` (it is `.dockerignore`d), so `bindings.sh` falls back
-  to grepping that interface for names and forwarding them as `wrangler
-  --binding` flags. A key that is set in the dashboard but missing there is
-  silently dropped and the provider reports "Missing API Key". Every server-side
-  provider variable is listed there; add yours when you add a provider.
-- **Never name a secret `VITE_*`.** Anything with that prefix is inlined into the
-  public browser bundle at build time. `VITE_DEFAULT_PROVIDER` and
-  `VITE_DEFAULT_MODEL` are public preferences and are build-time only, so on a
-  Docker host they can't be changed with a runtime env var — set the provider and
-  model once in the in-app Settings instead (it persists per browser).
+| | idle RSS | peak RSS | why |
+| --- | --- | --- | --- |
+| `wrangler pages dev` (older stage) | ~850 MB | >850 MB | workerd + miniflare + Node, three VMs |
+| `node server.mjs` (this stage) | ~110-150 MB | ~270 MB | one Node process, heap capped at 320 MB |
 
-`dockerstart` binds `${PORT:-5173}` on `${HOST:-0.0.0.0}`, so Render's injected
-`PORT` is honoured and the container's `HEALTHCHECK` probes the same port;
-`docker-compose.yaml` still maps `5173:5173` and needs nothing extra.
+The `850 MB` figure was always a property of the *simulator*, not of the app;
+the app needs maybe a third of it. `NODE_OPTIONS=--max-old-space-size=320` is
+set in the image so a runaway generation cannot push the container over the
+512 MB ceiling — raise or unset it on bigger plans.
+
+What the free tier still costs you, unchanged by any of this:
+
+- **It sleeps.** A free instance spins down ~15 minutes after the last request,
+  so the next visitor eats a cold start (a few seconds on 0.1 CPU, not the
+  ~30 s you would get from the wrangler image). Keep-alive cron pings are the
+  usual workaround; Cloudflare Pages free does not sleep at all.
+- **0.1 vCPU** is real. To keep that from turning into per-request work, the
+  image precompresses the ~28 MB client build to ~5.8 MB once at build time
+  (`scripts/compress-client-assets.mjs`, brotli + gzip siblings), and
+  `server.mjs` serves those directly with `ETag`/`immutable` caching — no
+  on-the-fly compression, no CDN required.
+- **Build minutes** are capped on the free plan; this project's build takes a
+  few minutes of it, so avoid pushing 40 times a day.
+
+Three things `server.mjs` deliberately reproduces rather than skips, because
+they are what a runtime swap usually silently breaks:
+
+- **Server env keys.** Every `/api/*` route resolves credentials through
+  `context.cloudflare?.env`, which Cloudflare injects and `server.mjs` fills
+  from `process.env`. Worth knowing: the built server bundle contains **no**
+  `process.env` at all (Vite replaces it with a build-time shim from
+  `vite-plugin-node-polyfills`), so the load context is not a fallback, it is
+  the only live path. Verified here: with only `DASHSCOPE_API_KEY` set in the
+  shell, `/api/check-env-key?provider=DashScope` returns `{"isSet":true}` while
+  `?provider=Anthropic` returns `{"isSet":false}`, and a streamed model call
+  leaves with `Authorization: Bearer <that key>`.
+- **Streaming and cancellation.** Chat responses are chunk-piped, not buffered
+  (measured through a stubbed 6-token upstream: first byte at 0.34 s, stream
+  complete at 1.84 s), and a client hanging up closes the request signal, which
+  is threaded into `Request.signal` so "stop generation" behaves as it does on
+  Pages. The app itself never passes a signal to the provider fetch, so an
+  in-flight upstream call keeps running to completion on *both* runtimes — that
+  is upstream behaviour, not a Node regression.
+- **WebContainer isolation.** `app/entry.server.tsx` sets the COOP/COEP pair on
+  SSR responses, and `server.mjs` copies response headers verbatim, so the
+  headers survive without any platform config. Static assets that Pages would
+  serve via `env.ASSETS.fetch` are served from `build/client` by the same
+  process.
+
+Local run without Docker, using the same code path the image uses:
+
+```bash
+pnpm run build:node     # remix vite:build + precompress build/client
+DASHSCOPE_API_KEY=sk-… pnpm run start:node   # http://localhost:3000
+```
+
+`build`/`deploy`/`dockerstart` are untouched, so Cloudflare Pages keeps getting
+byte-identical output and `--target bolt-ai-production` still gives you the
+wrangler-based image if you ever want to compare them.
 
 **Cloudflare Pages — the zero-maintenance option.** It is what `pnpm run deploy`
 targets (`wrangler pages deploy ./build/client`), the handler already lives in
@@ -278,19 +309,35 @@ Put `DASHSCOPE_API_KEY`, `XKIRO_API_KEY`, `VERCEL_TOKEN` and friends in *Pages �
 Settings → Environment variables → Secrets*, and the `VITE_*` ones under *Build
 & deployment → Variables* (they are compiled in at build time).
 
-**Vercel/Netlify's Node runtimes are not wired up here** — there is no
-`vercel.json`/`netlify.toml` and no Node server entry point at all: the SSR entry
-is the Pages Function `functions/[[path]].ts`, which imports `../build/server`
-and only executes under workerd (Cloudflare Pages, or `wrangler pages dev` in the
-container). A plain "Node.js" service on Render fails for the same reason: there
-is nothing to `node`. Docker or Cloudflare is the way; if you want to see the
-production container before deploying, build it locally (it carries the full
-dependency tree, so give Docker a generous memory limit):
+**Vercel/Netlify's adapters are still not wired up here.** There is no
+`vercel.json`/`netlify.toml`, and note Netlify's free functions impose a
+**60-second synchronous limit that is not configurable**, which cuts long
+generations off mid-stream (Cloudflare bills CPU time, not wall clock, so
+awaiting a slow model is free; Render's free tier has no request timeout). A
+plain "Node.js" service type *can* now work, since `server.mjs` exists — build
+command `NODE_OPTIONS=--max-old-space-size=4096 pnpm run build:node`, start
+command `pnpm run start:node` — but nothing in this repo is configured for it,
+so Docker or Cloudflare Pages remains the supported path.
+
+To inspect the production container before deploying, build it locally (it
+carries the full dependency tree, so give Docker a generous memory limit):
 
 ```bash
+# the low-memory Node runtime (what Render deploys): ~512 MB is enough
+docker build --platform=linux/amd64 -t bolt-ai:node --target node-runtime .
+docker run --rm -p 10000:10000 --env-file .env.local -e VITE_PUBLIC_APP_URL=http://localhost:10000 bolt-ai:node
+
+# the older wrangler/Pages-simulator image, for comparison
 docker build --platform=linux/amd64 -t bolt-ai:production --target bolt-ai-production .
 docker run --rm -p 5173:5173 --env-file .env.local -e VITE_PUBLIC_APP_URL=http://localhost:5173 bolt-ai:production
 ```
+
+That older stage is the one that still depends on `bindings.sh`: it forwards only
+the names it finds in `worker-configuration.d.ts` as `wrangler --binding` flags,
+so a dashboard key absent from that list is silently dropped and the provider
+reports "Missing API Key". `node-runtime` has no such filter — every runtime env
+var is visible — and is therefore the stage to use if you are adding a provider
+and do not want to touch `worker-configuration.d.ts`.
 
 
 ### Option 3: Desktop Application (Electron)
@@ -611,8 +658,10 @@ Remember to always commit your local changes or stash them before pulling update
 ## Available Scripts
 
 - **`pnpm run dev`**: Starts the development server.
-- **`pnpm run build`**: Builds the project.
+- **`pnpm run build`**: Builds the project (the output Cloudflare Pages deploys).
+- **`pnpm run build:node`**: Same build, plus precompressed `.br`/`.gz` copies of `build/client` for self-hosting.
 - **`pnpm run start`**: Runs the built application locally using Wrangler Pages.
+- **`pnpm run start:node`**: Runs the same build on plain Node via `server.mjs` (low memory; what `node-runtime`/Render runs).
 - **`pnpm run preview`**: Builds and runs the production build locally.
 - **`pnpm test`**: Runs the test suite using Vitest.
 - **`pnpm run typecheck`**: Runs TypeScript type checking.

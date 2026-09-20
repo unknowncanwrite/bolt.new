@@ -2,18 +2,22 @@
 #
 # Two ways to use this file:
 #   1. Dashboard: New + -> Blueprint -> connect this repo. Render reads this file.
-#   2. Manual: New + -> Web Service with "Runtime: Docker". That works too, as
-#      long as the Dockerfile's LAST stage is the production one (it is) - a
-#      plain `docker build .` has no way to pass --target.
+#   2. Manual: New + -> Web Service with "Runtime: Docker". That works too: a
+#      plain `docker build .` cannot pass --target, so whatever stage is LAST is
+#      what ships - and the last stage here is `node-runtime`, the low-memory
+#      production runtime (the older wrangler-based image is still available as
+#      `--target bolt-ai-production` for docker compose users).
 #
 # Secrets are never stored here: `sync: false` means "leave whatever is set in
 # the dashboard alone" (Dashboard -> Service -> Environment, "Secret" type).
 #
 # Note on VITE_* variables: those are inlined into the browser bundle at build
-# time, so Render's runtime env vars cannot change them. Anything that must be
-# configurable after the build has to be a server-side (non-VITE_) variable, or
-# a `--build-arg`. Never put an API key in a VITE_* variable: it ships to the
-# browser.
+# time, so Render's runtime env vars cannot change them - set them as build
+# arguments (Render: Service Settings -> Build & Cloud -> Environment Variables
+# with "Build" scope) if you want e.g. VITE_DEFAULT_PROVIDER=DashScope to be the
+# provider a fresh chat opens with. Server-side variables (everything without the
+# VITE_ prefix) are read at runtime and are the only place API keys belong: a
+# VITE_* key ships to every visitor's browser.
 services:
   - type: web
     name: bolt-ai
@@ -21,10 +25,22 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: ./
     region: singapore
-    # 512 MB is not enough (the runtime peaks around 850 MB booting). Render's
-    # Free and $7 Starter tiers are both 512 MB; 2 GB Standard is the first tier
-    # that can host this app. To pay nothing instead, deploy to Cloudflare Pages.
-    plan: standard
+    # Fits the free tier. It used to need 2 GB because the image booted the app
+    # inside `wrangler pages dev` (Cloudflare's workerd harness, ~850 MB at idle
+    # before the app got a single byte). `server.mjs` - the last stage of the
+    # Dockerfile - serves the identical build output on plain Node V8: ~130 MB
+    # idle, ~270 MB peak, so 512 MB is enough. Nothing CF-specific is dropped:
+    # the only Cloudflare API this app reads is `context.cloudflare?.env`, which
+    # server.mjs fills from process.env, so the keys below work at runtime with
+    # no rebuild (previously they had to be baked in at build time).
+    #
+    # What the free tier still costs you: it sleeps ~15 min after the last
+    # request, so the next visitor pays a cold start, and 0.1 CPU means the first
+    # SSR render is a few seconds. Cloudflare Pages free has no sleep and no CPU
+    # cap per request, so it stays the better free home for a busy app; Render
+    # free is the better free home when you want env vars, a Dockerfile and
+    # no wrangler in the loop.
+    plan: free
     healthCheckPath: /
     envVars:
       # ---- Alibaba Cloud Model Studio / DashScope (Qwen, DeepSeek, Kimi, GLM) ----

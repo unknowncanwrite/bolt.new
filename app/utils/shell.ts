@@ -4,6 +4,34 @@ import { withResolvers } from './promises';
 import { atom } from 'nanostores';
 import { expoUrlAtom } from '~/lib/stores/qrCodeStore';
 
+/**
+ * Environment for the shell that *runs the agent's commands* (`$install`,
+ * `$dev`, every shell action in an artifact).
+ *
+ * npm stops and asks `Need to install the following packages: vite@5 … Ok to
+ * proceed? (y)` whenever a script refers to a binary that is not installed —
+ * which happens the moment a generated project's `package.json` is missing a
+ * devDependency. A human can type `y` in the terminal; an automated run cannot,
+ * so the command never exits and the preview just sits there, which looks
+ * exactly like "the agent froze and never started the dev server". Answering up
+ * front turns that hang into an install and a real failure message.
+ *
+ * Deliberately NOT applied to `newShellProcess` (the terminal the user types in)
+ * and to no other spawn: `env` in WebContainer only *adds* variables, so PATH
+ * and HOME still come from the container, and interactive prompts stay
+ * answerable for people who want to answer them.
+ */
+export const AUTOMATION_ENV = {
+  npm_config_yes: 'true',
+
+  /*
+   * neither of these is useful inside a throwaway sandbox, and both add seconds
+   * to every install on a fractional-CPU host
+   */
+  npm_config_audit: 'false',
+  npm_config_fund: 'false',
+};
+
 export async function newShellProcess(webcontainer: WebContainer, terminal: ITerminal) {
   const args: string[] = [];
 
@@ -136,6 +164,7 @@ export class BoltShell {
         cols: terminal.cols ?? 80,
         rows: terminal.rows ?? 15,
       },
+      env: AUTOMATION_ENV,
     });
 
     const input = process.input.getWriter();

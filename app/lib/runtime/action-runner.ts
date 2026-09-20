@@ -5,7 +5,7 @@ import type { ActionAlert, BoltAction, DeployAlert, FileHistory, SupabaseAction,
 import { createScopedLogger } from '~/utils/logger';
 import { unreachable } from '~/utils/unreachable';
 import type { ActionCallbackData } from './message-parser';
-import type { BoltShell } from '~/utils/shell';
+import { AUTOMATION_ENV, type BoltShell } from '~/utils/shell';
 
 const logger = createScopedLogger('ActionRunner');
 
@@ -392,7 +392,14 @@ export class ActionRunner {
     const webcontainer = await this.#webcontainer;
 
     // Create a new terminal specifically for the build
-    const buildProcess = await webcontainer.spawn('npm', ['run', 'build']);
+    const buildProcess = await webcontainer.spawn('npm', ['run', 'build'], {
+      /*
+       * same reason as the agent shell: an `npm run build` in a project whose
+       * devDependencies were never installed stops at "Ok to proceed?", and
+       * there is no terminal here to answer it
+       */
+      env: AUTOMATION_ENV,
+    });
 
     let output = '';
     const outputPromise = buildProcess.output.pipeTo(

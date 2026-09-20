@@ -8,6 +8,7 @@ import type { ActionCallbackData } from './message-parser';
 import { AUTOMATION_ENV, type BoltShell } from '~/utils/shell';
 import { isDevServerCommand } from '~/lib/utils/devServerRestart';
 import { notifyFileChange } from '~/lib/utils/fileChangeBus';
+import { armDevServerBootWatch, raiseTerminalSignal, recentTerminalOutput } from '~/lib/stores/terminalWatch';
 
 const logger = createScopedLogger('ActionRunner');
 
@@ -82,6 +83,9 @@ export class ActionRunner {
    * because the runner owns the shell the command is still sitting in.
    */
   #devServer?: { command: string; action: ActionState };
+
+  /** When the last restart interrupted the previous command, to tell it from a real kill. */
+  #lastRestartAt = 0;
 
   constructor(
     webcontainerPromise: Promise<WebContainer>,
@@ -282,6 +286,9 @@ export class ActionRunner {
      */
     if (isDevServerCommand(action.content)) {
       this.#devServer = { command: action.content, action };
+
+      // a dev command never exits, so its outcome has to be read from the output
+      void this.#watchDevServerBoot();
     }
 
     const resp = await shell.executeCommand(this.runnerId.get(), action.content, () => {
@@ -314,11 +321,32 @@ export class ActionRunner {
 
     this.#devServer = { command: action.content, action };
 
+    /*
+     * a dev server that boots fine never returns here, so watch its output for
+     * the outcome instead of waiting for an exit that will not come
+     */
+    void this.#watchDevServerBoot();
+
     const resp = await shell.executeCommand(this.runnerId.get(), action.content, () => {
       logger.debug(`[${action.type}]:Aborting Action\n\n`, action);
       action.abort();
     });
     logger.debug(`${action.type} Shell Response: [exit code:${resp?.exitCode}]`);
+
+    /*
+     * If the command came back, the server stopped serving. Our own restart
+     * interrupts it deliberately, so ignore that; anything else that took the
+     * shared shell over (the next command the model runs, say) has silently
+     * killed the preview, and nobody reading a green terminal would know. Saying
+     * so lets the model bring it back instead of waiting for a human to notice.
+     */
+    if (action.abortSignal.aborted && Date.now() - this.#lastRestartAt > 15_000) {
+      raiseTerminalSignal({
+        id: 'dev-server-interrupted',
+        label: 'the dev server was interrupted by another command and is no longer running',
+        line: `The \`${action.content.trim()}\` process ended before the preview came back up.`,
+      });
+    }
 
     if (resp?.exitCode != 0) {
       throw new ActionCommandError('Failed To Start Application', resp?.output || 'No Output Available');
@@ -363,6 +391,33 @@ export class ActionRunner {
     }
   }
 
+  /**
+   * Give a starting dev server a deadline. Vite says `ready in 412 ms` or prints
+   * `Local: http://localhost:5173/` when it is up; if neither appears, and no
+   * error line explained itself either, the honest conclusion is that the
+   * preview never came up - which is worth telling the model, because the
+   * terminal can look completely normal while the browser shows a blank page.
+   */
+  async #watchDevServerBoot(context?: string): Promise<void> {
+    const outcome = await armDevServerBootWatch();
+
+    if (outcome.ready || outcome.signal) {
+      return;
+    }
+
+    this.onAlert?.({
+      type: 'error',
+      title: 'Dev Server Never Came Up',
+      description:
+        context === undefined
+          ? 'The dev server command was run, but no preview reported ready before the deadline and no error line was printed.'
+          : `The dev server was restarted ${context}, but no preview reported ready before the deadline and no error line was printed.`,
+      content:
+        outcome.tail || recentTerminalOutput() || 'No terminal output was captured while the dev server was starting.',
+      source: 'terminal',
+    });
+  }
+
   /** Whether this artifact has a dev server whose command we can re-run. */
   get hasDevServer() {
     return this.#devServer !== undefined;
@@ -395,8 +450,15 @@ export class ActionRunner {
 
     // marks the aborted action's exit as expected, so no false "Dev Server Failed"
     devServer.action.abort();
+    this.#lastRestartAt = Date.now();
 
     logger.info(`Restarting dev server (${reason}): ${devServer.command}`);
+
+    /*
+     * a restart that leaves nothing listening is exactly as invisible as a first
+     * boot that never came up, so it gets the same deadline
+     */
+    void this.#watchDevServerBoot(`after ${reason}`);
 
     // never resolves for a healthy dev server, so it is intentionally not awaited
     shell

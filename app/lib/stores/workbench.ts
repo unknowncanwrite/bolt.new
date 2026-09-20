@@ -7,6 +7,7 @@ import type { ITerminal } from '~/types/terminal';
 import { unreachable } from '~/utils/unreachable';
 import { ALWAYS_RESTART_KEY, isAlwaysRestartEnabled, shouldRestartOnChanges } from '~/lib/utils/devServerRestart';
 import { onFileChanges } from '~/lib/utils/fileChangeBus';
+import { terminalSignal } from '~/lib/stores/terminalWatch';
 import { EditorStore } from './editor';
 import { FilesStore, type FileMap } from './files';
 import { PreviewsStore } from './previews';
@@ -66,9 +67,11 @@ export class WorkbenchStore {
    */
   #unsubscribeFromFileChanges?: () => void;
   #fileChangesSubscribed = false;
+  #terminalSignalsSubscribed = false;
 
   constructor() {
     this.#watchFileChanges();
+    this.#watchTerminalSignals();
 
     if (import.meta.hot) {
       import.meta.hot.data.artifacts = this.artifacts;
@@ -124,6 +127,51 @@ export class WorkbenchStore {
   }
   get boltTerminal() {
     return this.#terminalStore.boltTerminal;
+  }
+
+  /**
+   * Surface what the terminal scan finds as an alert, so a problem nobody exited
+   * on still reaches the two places that matter: the user (the alert box) and the
+   * model (the auto-fix gate, which reads `actionAlert`). Routing through the
+   * existing alert means one attempt budget and one repeat guard for every error
+   * source - exit codes, streaming output, an unresponsive boot, a preview
+   * exception.
+   */
+  #watchTerminalSignals() {
+    if (this.#terminalSignalsSubscribed) {
+      return;
+    }
+
+    this.#terminalSignalsSubscribed = true;
+
+    terminalSignal.subscribe((signal) => {
+      const alert = this.actionAlert.get();
+
+      if (!signal) {
+        /*
+         * Recovery: the scan cleared itself because the dev server came back up,
+         * so stop showing a terminal error that is no longer true. An alert the
+         * user has to act on (a deploy, a preview error) is left alone.
+         */
+        if (alert?.source === 'terminal') {
+          this.clearAlert();
+        }
+
+        return;
+      }
+
+      if (alert) {
+        return;
+      }
+
+      this.actionAlert.set({
+        type: 'error',
+        title: `Terminal error: ${signal.label}`,
+        description: signal.line,
+        content: signal.tail || signal.line,
+        source: 'terminal',
+      });
+    });
   }
 
   /**

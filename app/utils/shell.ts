@@ -1,6 +1,7 @@
 import type { WebContainer, WebContainerProcess } from '@webcontainer/api';
 import type { ITerminal } from '~/types/terminal';
 import { withResolvers } from './promises';
+import { ingestTerminalChunk } from '~/lib/stores/terminalWatch';
 import { atom } from 'nanostores';
 import { expoUrlAtom } from '~/lib/stores/qrCodeStore';
 
@@ -176,9 +177,25 @@ export class BoltShell {
 
     const jshReady = withResolvers<void>();
     let isInteractive = false;
+
+    /*
+     * Captured rather than read off `this` inside `write`: a WritableStream sink
+     * method is not called with the class as its receiver, so `this.executionState`
+     * would throw on the first chunk of output.
+     */
+    const executionState = this.executionState;
+
     streamA.pipeTo(
       new WritableStream({
         write(data) {
+          /*
+           * Read the terminal, do not just wait for its exit code: a dev server that
+           * prints `Internal server error` and then keeps running would otherwise look
+           * healthy forever. `commandActive` scopes the scan to moments when the agent
+           * has a command attached to this shell, so idle scrollback never fires.
+           */
+          ingestTerminalChunk(data, { commandActive: executionState.get()?.active === true });
+
           if (!isInteractive) {
             const [, osc] = data.match(/\x1b\]654;([^\x07]+)\x07/) || [];
 

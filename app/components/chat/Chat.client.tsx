@@ -9,6 +9,7 @@ import { description, useChatHistory } from '~/lib/persistence';
 import { chatStore } from '~/lib/stores/chat';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { autoFixEnabled, autoFixTracker, recordAutoFixAttempt, resetAutoFixAttempts } from '~/lib/stores/autoFix';
+import { resetTerminalSignalDedupe } from '~/lib/stores/terminalWatch';
 import {
   MAX_AUTO_FIX_ATTEMPTS,
   buildFixRequestMessage,
@@ -446,6 +447,12 @@ export const ChatImpl = memo(
        */
       if (!messageInput) {
         resetAutoFixAttempts();
+
+        /*
+         * likewise: an error the model was already sent a fix request for can be
+         * reported again on this turn if it comes back
+         */
+        resetTerminalSignalDedupe();
       }
 
       if (!messageContent?.trim()) {

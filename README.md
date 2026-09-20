@@ -111,6 +111,25 @@ Three defaults are tuned for someone who is not going to read the terminal:
   is already writing, three attempts per turn, and the manual alert comes back
   once the budget is spent. To restore click-to-ask:
   `localStorage.setItem('chat_error_autofix', 'false')`.
+- **The terminal is read while commands run, not only when they exit.** Waiting
+  for a non-zero exit code is no use for a dev server, which prints
+  `[vite] Internal server error`, stays running, and looks healthy forever. So
+  the output is scanned line by line as it streams: unresolvable imports, missing
+  modules and binaries, a port already in use, a failed pre-bundle, an npm
+  dependency conflict, a `SyntaxError`/`TypeError` from the running app. Three
+  things come out of that: the error reaches the auto-fix above with the real
+  output quoted (up to ~2.6 KB of the tail, not "it failed"); a dev server that
+  starts and never says `ready in …` is reported after a 75-second deadline
+  instead of leaving a blank preview; and an alert stands itself down once the
+  server says it is listening again. Reading is limited to moments when a
+  command is attached to the shell, so old scrollback containing the word
+  `Cannot find module` cannot wake the model up for nothing.
+
+The fix request also states, in as many words, that the terminal belongs to the
+model: install the missing package, free the port, delete the stale lockfile,
+start the dev server again — then keep reading the output until the app says it
+is listening, or say what is still blocking it. There is no "run this command
+yourself" step in between.
 
 Automated shells also no longer block on npm's `Need to install the following
 packages: vite … Ok to proceed? (y)` prompt — the agent's shell and the preview

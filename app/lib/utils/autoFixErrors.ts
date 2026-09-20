@@ -191,6 +191,11 @@ export function buildFixRequestMessage(
         'This was captured from the running app, not typed by me. Find the root cause in the',
         'output below, change the files that need changing, and restart the dev server if the',
         'fix needs it. Do not ask me to run commands or confirm anything first.',
+        '',
+        'The terminal is yours: run whatever the fix needs - install a missing package, free a',
+        'port that is in use, delete a stale lockfile or generated file, reinstall dependencies,',
+        'or start the dev server again yourself. Then read the output and keep going until the',
+        'app reports that it is listening, or say what is still blocking it.',
       ]
     : [];
 

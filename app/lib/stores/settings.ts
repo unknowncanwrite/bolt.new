@@ -24,7 +24,7 @@ export interface Shortcuts {
 }
 
 // Providers whose endpoint can be overridden from Settings (stored per provider, wins over .env).
-export const URL_CONFIGURABLE_PROVIDERS = ['Ollama', 'LMStudio', 'OpenAILike', 'DashScope', 'Xkiro'];
+export const URL_CONFIGURABLE_PROVIDERS = ['Ollama', 'LMStudio', 'OpenAILike', 'DashScope', 'Xkiro', 'AgentRouter'];
 export const LOCAL_PROVIDERS = ['OpenAILike', 'LMStudio', 'Ollama'];
 
 export type ProviderSetting = Record<string, IProviderConfig>;

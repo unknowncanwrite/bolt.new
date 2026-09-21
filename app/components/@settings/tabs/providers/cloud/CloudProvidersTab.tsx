@@ -13,10 +13,12 @@ import { BsRobot, BsCloud } from 'react-icons/bs';
 import { TbBrain, TbCloudComputing, TbSparkles } from 'react-icons/tb';
 import { BiCodeBlock, BiChip } from 'react-icons/bi';
 import { FaCloud, FaBrain } from 'react-icons/fa';
+import ManualEndpointCard from './ManualEndpointCard';
 import type { IconType } from 'react-icons';
 
 // Add type for provider names to ensure type safety
 type ProviderName =
+  | 'AgentRouter'
   | 'AmazonBedrock'
   | 'Anthropic'
   | 'Cohere'
@@ -37,6 +39,7 @@ type ProviderName =
 
 // Update the PROVIDER_ICONS type to use the ProviderName type
 const PROVIDER_ICONS: Record<ProviderName, IconType> = {
+  AgentRouter: TbCloudComputing,
   AmazonBedrock: SiAmazon,
   Anthropic: FaBrain,
   Cohere: BiChip,
@@ -61,6 +64,8 @@ const PROVIDER_DESCRIPTIONS: Partial<Record<ProviderName, string>> = {
   Anthropic: 'Access Claude and other Anthropic models',
   DashScope: 'Qwen (and other Model Studio) models through Alibaba Cloud DashScope OpenAI-compatible endpoint',
   Xkiro: 'One xKiro API key for OpenAI, Anthropic, DeepSeek, Qwen and more via an OpenAI-compatible gateway',
+  AgentRouter:
+    'One OpenAI-compatible endpoint in front of your own models - the Agent Router gateway, hosted or self-hosted',
   Github: 'Use OpenAI models hosted through GitHub infrastructure',
   OpenAI: 'Use GPT-4, GPT-3.5, and other OpenAI models',
 };
@@ -141,6 +146,8 @@ const CloudProvidersTab = () => {
 
   return (
     <div className="space-y-6">
+      <ManualEndpointCard />
+
       <motion.div
         className="space-y-4"
         initial={{ opacity: 0, y: 20 }}

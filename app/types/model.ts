@@ -17,7 +17,10 @@ export type ProviderInfo = {
 export interface IProviderSetting {
   enabled?: boolean;
   baseUrl?: string;
+
+  /** Pinned model lists, typed in Settings -> Providers -> Manual endpoint. */
   OPENAI_LIKE_API_MODELS?: string;
+  AGENTROUTER_API_MODELS?: string;
 }
 
 export type IProviderConfig = ProviderInfo & {

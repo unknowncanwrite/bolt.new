@@ -539,7 +539,22 @@ LMSTUDIO_BASE_URL=http://127.0.0.1:1234
 - 🟡 **Yellow Indicator**: Provider enabled but may need additional setup
 - 🔵 **Blue Pencil**: Click to edit configuration
 
-### DashScope & xKiro (added in this fork)
+### DashScope, xKiro & Agent Router (added in this fork)
+### Pointing at a gateway without a rebuild
+
+Settings → Providers → **Manual endpoint** takes a base URL, a key, and (optionally)
+the model list for one provider. It writes the same values the environment variables
+above would, so it is the quick path for an agent router, a corporate proxy, a vLLM
+instance, or anything else that speaks `/v1/chat/completions`:
+
+- the URL and model list are stored per provider in this browser and win over `.env`;
+- the key goes in the same place the chat's key manager uses, so nothing is written to
+  the repo or the build;
+- a bare host is completed to `<host>/v1`, and a pasted `/chat/completions` is refused
+  with an explanation, because that one mistake looks exactly like a broken provider;
+- if the panel warns that the provider builds its own request (most vendor SDKs do),
+  choose **OpenAILike** (any OpenAI-compatible endpoint) or **AgentRouter** instead.
+
 
 Both are OpenAI-compatible, so they need no extra SDK - just keys in `.env.local`:
 
@@ -552,6 +567,12 @@ DASHSCOPE_BASE_URL=https://<workspaceId>.<region>.maas.aliyuncs.com/compatible-m
 # xKiro gateway (https://xkiro.com) - model ids are always vendor/model
 XKIRO_API_KEY=sk-xt-...
 XKIRO_BASE_URL=https://api.xkiro.com/v1
+
+# Agent Router (formerly Envoy AI Gateway) - one OpenAI-compatible endpoint in front of
+# whatever models your gateway serves. Hosted service, or `aigw run` on localhost:1975.
+AGENTROUTER_API_KEY=sk-...                      # any value is fine for a localhost gateway
+AGENTROUTER_BASE_URL=https://api.router.tetrate.ai/v1
+AGENTROUTER_API_MODELS=claude-sonnet-4.6:200000:32000;deepseek-v4-pro:131072
 
 # Optional: preselect provider + model for every new chat
 VITE_DEFAULT_PROVIDER=DashScope
@@ -618,6 +639,7 @@ same deployment URL.
 - **Ollama** - Run open-source models locally with advanced model management
 - **LM Studio** - Local model inference with LM Studio
 - **OpenAI-like** - Connect to any OpenAI-compatible API endpoint
+- **Agent Router** - one OpenAI-compatible endpoint in front of your own model setup (hosted Tetrate Agent Router Service or a self-run gateway), with `GET /models` discovery and a pinned list as a fallback
 
 > **💡 Pro Tip**: Start with OpenAI or Anthropic for the best results, then explore other providers based on your specific needs and budget considerations.
 

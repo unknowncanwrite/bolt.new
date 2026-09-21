@@ -1,3 +1,4 @@
+import AgentRouterProvider from './providers/agent-router';
 import AnthropicProvider from './providers/anthropic';
 import CerebrasProvider from './providers/cerebras';
 import CohereProvider from './providers/cohere';
@@ -24,6 +25,7 @@ import MoonshotProvider from './providers/moonshot';
 import ZaiProvider from './providers/z-ai';
 
 export {
+  AgentRouterProvider,
   AnthropicProvider,
   DashScopeProvider,
   CerebrasProvider,

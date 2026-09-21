@@ -1,9 +1,8 @@
 import { type ActionFunctionArgs } from '@remix-run/cloudflare';
 import { createDataStream, generateId } from 'ai';
-import { MAX_RESPONSE_SEGMENTS, MAX_TOKENS, type FileMap } from '~/lib/.server/llm/constants';
+import { MAX_RESPONSE_SEGMENTS, type FileMap } from '~/lib/.server/llm/constants';
 import { CONTINUE_PROMPT } from '~/lib/common/prompts/prompts';
 import { streamText, type Messages, type StreamingOptions } from '~/lib/.server/llm/stream-text';
-import SwitchableStream from '~/lib/.server/llm/switchable-stream';
 import type { IProviderSetting } from '~/types/model';
 import { createScopedLogger } from '~/utils/logger';
 import { getFilePaths, selectContext } from '~/lib/.server/llm/select-context';
@@ -14,6 +13,7 @@ import { extractPropertiesFromMessage } from '~/lib/.server/llm/utils';
 import type { DesignScheme } from '~/types/design-scheme';
 import { MCPService } from '~/lib/services/mcpService';
 import { StreamRecoveryManager } from '~/lib/.server/llm/stream-recovery';
+import { detectIncompleteBuild } from '~/lib/utils/buildCompleteness';
 
 export async function action(args: ActionFunctionArgs) {
   return chatAction(args);
@@ -72,8 +72,6 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
   const providerSettings: Record<string, IProviderSetting> = JSON.parse(
     parseCookies(cookieHeader || '').providers || '{}',
   );
-
-  const stream = new SwitchableStream();
 
   const cumulativeUsage = {
     completionTokens: 0,
@@ -207,6 +205,14 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
           // logger.debug('Code Files Selected');
         }
 
+        /*
+         * The cap this replaces read `stream.switches` on a SwitchableStream that
+         * nothing ever switches on this path, so the limit silently did nothing
+         * while the recursion kept going. Count the continuations where they
+         * actually happen.
+         */
+        let continuations = 0;
+
         const options: StreamingOptions = {
           supabaseConnection: supabase,
           toolChoice: 'auto',
@@ -227,7 +233,18 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
               cumulativeUsage.totalTokens += usage.totalTokens || 0;
             }
 
-            if (finishReason !== 'length') {
+            /*
+             * Two ways a build ends up half-finished. The provider says so when
+             * output tokens run out; and, invisibly otherwise, the model simply
+             * stops after scaffolding ("install first, files next"), which reads
+             * as a clean `stop` and leaves the user with one file and no app.
+             */
+            const incomplete =
+              chatMode === 'build'
+                ? detectIncompleteBuild(content, { existingFileCount: Object.keys(files || {}).length })
+                : null;
+
+            if (finishReason !== 'length' && !incomplete) {
               dataStream.writeMessageAnnotation({
                 type: 'usage',
                 value: {
@@ -249,21 +266,62 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
               return;
             }
 
-            if (stream.switches >= MAX_RESPONSE_SEGMENTS) {
-              throw Error('Cannot continue message: Maximum segments reached');
+            if (continuations >= MAX_RESPONSE_SEGMENTS - 1) {
+              /*
+               * Not an error: what came through is still a valid answer, and
+               * throwing here would replace it with a red box. Say instead that
+               * the limit was reached, so nobody has to guess why the app is
+               * missing files.
+               */
+              logger.warn(`Continuation limit reached (${continuations}); the response may still be incomplete`);
+              dataStream.writeMessageAnnotation({
+                type: 'usage',
+                value: {
+                  completionTokens: cumulativeUsage.completionTokens,
+                  promptTokens: cumulativeUsage.promptTokens,
+                  totalTokens: cumulativeUsage.totalTokens,
+                },
+              });
+              dataStream.writeData({
+                type: 'progress',
+                label: 'response',
+                status: 'complete',
+                order: progressCounter++,
+                message: 'Response ended at the continuation limit - it may be incomplete',
+              } satisfies ProgressAnnotation);
+
+              return;
             }
 
-            const switchesLeft = MAX_RESPONSE_SEGMENTS - stream.switches;
+            continuations++;
 
-            logger.info(`Reached max token limit (${MAX_TOKENS}): Continuing message (${switchesLeft} switches left)`);
+            logger.info(
+              `Continuing the response (${continuations} of ${MAX_RESPONSE_SEGMENTS - 1}): ${
+                finishReason === 'length' ? 'ran out of output tokens' : (incomplete?.detail ?? 'incomplete')
+              }`,
+            );
+            dataStream.writeData({
+              type: 'progress',
+              label: 'response',
+              status: 'in-progress',
+              order: progressCounter++,
+              message:
+                finishReason === 'length'
+                  ? 'Out of output tokens - continuing'
+                  : `The build stopped early (${incomplete?.detail}) - continuing`,
+            } satisfies ProgressAnnotation);
 
             const lastUserMessage = processedMessages.filter((x) => x.role == 'user').slice(-1)[0];
-            const { model, provider } = extractPropertiesFromMessage(lastUserMessage);
+            const { model, provider } = lastUserMessage ? extractPropertiesFromMessage(lastUserMessage) : {};
             processedMessages.push({ id: generateId(), role: 'assistant', content });
             processedMessages.push({
               id: generateId(),
               role: 'user',
-              content: `[Model: ${model}]\n\n[Provider: ${provider}]\n\n${CONTINUE_PROMPT}`,
+              content: [
+                `[Model: ${model}]\n\n[Provider: ${provider}]`,
+                CONTINUE_PROMPT,
+                ...(incomplete ? [incomplete.nudge] : []),
+              ].join('\n\n'),
             });
 
             const result = await streamText({

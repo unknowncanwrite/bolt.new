@@ -45,8 +45,13 @@ export function isReasoningModel(modelName: string): boolean {
   return result;
 }
 
-// limits the number of model responses that can be returned in a single request
-export const MAX_RESPONSE_SEGMENTS = 2;
+/**
+ * How many pieces one assistant reply may be stitched from: the first response
+ * plus the continuations granted when it runs out of output tokens or stops with
+ * an unfinished build. A full app is routinely three segments on a 16k output
+ * cap, and leaving the build half-written is the failure the user sees.
+ */
+export const MAX_RESPONSE_SEGMENTS = 4;
 
 export interface File {
   type: 'file';

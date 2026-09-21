@@ -131,6 +131,16 @@ start the dev server again — then keep reading the output until the app says i
 is listening, or say what is still blocking it. There is no "run this command
 yourself" step in between.
 
+**A build that stops early continues on its own.** Some models end the message after
+scaffolding - `package.json`, one `npm install`, and a clean "I'm done" - which leaves
+you with one file and nothing to preview, and the provider reports no error, because
+there wasn't one. So the response is judged on what it contains: an artifact left open,
+or a couple of files with an install and no dev server ever started, gets one more turn
+of the same model with the partial text handed back and an instruction to finish the
+remaining files (never to repeat them, and never to invent features you did not ask
+for). The progress line says "the build stopped early - continuing", and the loop is
+capped at three continuations per reply.
+
 Automated shells also no longer block on npm's `Need to install the following
 packages: vite … Ok to proceed? (y)` prompt — the agent's shell and the preview
 build run with `npm_config_yes=true`, while the terminal you type in keeps

@@ -64,6 +64,24 @@ export const ERROR_PATTERNS: ErrorPattern[] = [
     pattern: /^(sh|bash|\/bin\/sh): (\d+: )?.*not found/,
   },
   { id: 'port-in-use', label: 'the dev server port is already in use', pattern: /EADDRINUSE/ },
+
+  /*
+   * Vite parses every entry file once at boot. If a write was still landing, the
+   * scan dies on a snapshot that no longer exists and - because it happens after
+   * the `ready in 5652 ms` banner - looks from the outside like a working server
+   * that is merely slow. Both halves of the message matter: the scan failure, and
+   * the parser complaint the scan printed above it.
+   */
+  {
+    id: 'vite-dep-scan',
+    label: 'the dev server could not parse the project when it started',
+    pattern: /Failed to scan for dependencies from entries/i,
+  },
+  {
+    id: 'bundler-syntax',
+    label: 'the bundler rejected the syntax of a file',
+    pattern: /\[ERROR\]\s*(Expected|Unexpected|Unterminated|Invalid|Missing)\b/i,
+  },
   {
     id: 'vite-internal',
     label: 'the dev server reported an internal server error',

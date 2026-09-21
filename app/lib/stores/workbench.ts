@@ -7,7 +7,19 @@ import type { ITerminal } from '~/types/terminal';
 import { unreachable } from '~/utils/unreachable';
 import { ALWAYS_RESTART_KEY, isAlwaysRestartEnabled, shouldRestartOnChanges } from '~/lib/utils/devServerRestart';
 import { onFileChanges } from '~/lib/utils/fileChangeBus';
-import { terminalSignal } from '~/lib/stores/terminalWatch';
+import {
+  recentTerminalOutput,
+  resetTerminalSignalDedupe,
+  terminalSignal,
+  type TerminalSignal,
+} from '~/lib/stores/terminalWatch';
+import {
+  decideCompileErrorRecovery,
+  describeCompileError,
+  MAX_STALE_CACHE_RESTARTS,
+  parseCompileError,
+} from '~/lib/utils/compileError';
+import { logStore } from './logs';
 import { EditorStore } from './editor';
 import { FilesStore, type FileMap } from './files';
 import { PreviewsStore } from './previews';
@@ -68,6 +80,9 @@ export class WorkbenchStore {
   #unsubscribeFromFileChanges?: () => void;
   #fileChangesSubscribed = false;
   #terminalSignalsSubscribed = false;
+
+  /** How often each blamed line has had its bundler cache cleared. */
+  #cacheRecoveryAttempts = new Map<string, number>();
 
   constructor() {
     this.#watchFileChanges();
@@ -164,14 +179,108 @@ export class WorkbenchStore {
         return;
       }
 
-      this.actionAlert.set({
-        type: 'error',
-        title: `Terminal error: ${signal.label}`,
-        description: signal.line,
-        content: signal.tail || signal.line,
-        source: 'terminal',
+      /*
+       * Before this becomes a message to the model, check it against the file the
+       * tool blamed: a dev server that scanned the project while Bolt was still
+       * writing it prints an error about a snapshot that no longer exists, and the
+       * fix is to clear a cache, not to rewrite correct code.
+       */
+      void this.#recoverStaleCompileError(signal).then((recovery) => {
+        if (recovery.action === 'handled') {
+          return;
+        }
+
+        const where = signal.detail ? describeCompileError(signal.detail) : '';
+
+        this.actionAlert.set({
+          type: 'error',
+          title: `Terminal error: ${signal.label}`,
+          description: [where || signal.line, recovery.reason].filter(Boolean).join(' - '),
+          content: signal.tail || signal.line,
+          source: 'terminal',
+        });
       });
     });
+  }
+
+  /**
+   * Read the blamed file back out of the project and decide who fixes it. Returns
+   * `handled` when a restart with cleared caches was issued instead of a prompt.
+   */
+  async #recoverStaleCompileError(signal: TerminalSignal): Promise<{ action: 'handled' | 'alert'; reason?: string }> {
+    /*
+     * The frame the tool blames the file with can land after the line that tripped
+     * the scan, so if the signal did not catch it, look at the transcript as it
+     * stands now before deciding this needs a model.
+     */
+    const detail = signal.detail ?? parseCompileError(`${signal.tail}\n${recentTerminalOutput(4000)}`);
+
+    if (!detail) {
+      return { action: 'alert' };
+    }
+
+    const key = `${detail.file}:${detail.line}`;
+    const attempts = this.#cacheRecoveryAttempts.get(key) ?? 0;
+    const runner = this.#devServerRunner();
+    const decision = decideCompileErrorRecovery({
+      detail,
+      content: this.#projectFileContent(detail.file),
+      attempts,
+      maxAttempts: MAX_STALE_CACHE_RESTARTS,
+      hasDevServer: runner?.hasDevServer === true,
+    });
+
+    if (decision.action !== 'restart') {
+      return { action: 'alert', reason: attempts > 0 ? `${decision.reason}` : undefined };
+    }
+
+    this.#cacheRecoveryAttempts.set(key, attempts + 1);
+
+    const restarted = await runner?.restartDevServer(`stale build cache: ${decision.reason}`, { force: true });
+
+    if (!restarted) {
+      return { action: 'alert', reason: 'the dev server could not be restarted' };
+    }
+
+    /*
+     * The identical error has to be reportable once more: if the file really was
+     * broken, the re-scan prints it again and the next round goes to the model.
+     * Without this the dedupe key would swallow a genuine failure.
+     */
+    resetTerminalSignalDedupe();
+
+    const note = `${detail.file}:${detail.line} - ${detail.message ?? 'the bundler blamed a line that is not broken'}. ${decision.reason}.`;
+    console.info('[Workbench] Cleared the bundler cache and restarted the dev server:', note);
+    logStore.logSystem(
+      'The dev server reported an error for code that is fine, so its build cache was cleared and it was restarted.',
+      { note },
+    );
+
+    return { action: 'handled' };
+  }
+
+  /** The runner holding a live dev server, newest artifact first. */
+  #devServerRunner(): ActionRunner | undefined {
+    const runners = Object.values(this.artifacts.get())
+      .map((artifact) => artifact?.runner)
+      .filter(Boolean)
+      .reverse();
+
+    return runners.find((candidate) => candidate?.hasDevServer);
+  }
+
+  /** Current content of a project file, however it happens to be keyed. */
+  #projectFileContent(relativePath: string): string | undefined {
+    const wanted = relativePath.replace(/^\.\//, '').replace(/^\/+/, '');
+    const files = this.#filesStore.files.get();
+    const direct = files[`/${wanted}`] ?? files[wanted];
+    const lookedUp = direct ?? Object.entries(files).find(([key]) => key.endsWith(`/${wanted}`))?.[1];
+
+    if (lookedUp && lookedUp.type === 'file' && !lookedUp.isBinary) {
+      return lookedUp.content;
+    }
+
+    return undefined;
   }
 
   /**

@@ -129,4 +129,33 @@ describe('DEV_BOOT_TIMEOUT_MS', () => {
   it('is long enough for a cold install on a fractional CPU', () => {
     expect(DEV_BOOT_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
   });
+  describe('matchErrorLine against the transcript that hid a broken preview', () => {
+    it.each([
+      ['Error:   Failed to scan for dependencies from entries:', 'vite-dep-scan'],
+      ['  ✘ [ERROR] Expected ")" but found "}"', 'bundler-syntax'],
+      [
+        '11:25:23 PM [vite] Internal server error: /home/project/src/components/TodoList.tsx: Unexpected token, expected "," (35:8)',
+        'vite-internal',
+      ],
+    ])('%s -> %s', (line, id) => {
+      expect(matchErrorLine(line)?.id).toBe(id);
+    });
+
+    it('leaves the noise alone', () => {
+      for (const line of [
+        'Browserslist: caniuse-lite is outdated. Please run:',
+        '  npx update-browserslist-db@latest',
+        '  Why you should do it regularly: https://github.com/browserslist/update-db#readme',
+        'Registry latest:         1.0.30001810',
+        'caniuse-lite has been successfully updated',
+        'No target browser changes',
+        '  Plugin: vite:react-babel',
+        '  File: /home/project/src/components/TodoList.tsx:35:8',
+        '      at constructor (/home/project/node_modules/@babel/parser/lib/index.js:362:19)',
+        'jsh: command not found: Browserslist:',
+      ]) {
+        expect(matchErrorLine(line), line).toBeUndefined();
+      }
+    });
+  });
 });

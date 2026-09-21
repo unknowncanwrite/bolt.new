@@ -1,4 +1,5 @@
 import { atom } from 'nanostores';
+import { parseCompileError, type CompileErrorDetail } from '~/lib/utils/compileError';
 import { stripAnsi } from '~/lib/utils/terminalSignals';
 import {
   DEV_BOOT_TIMEOUT_MS,
@@ -37,6 +38,13 @@ export interface TerminalSignal extends TerminalErrorMatch {
 
   /** Output around the failure, for the model to reason about. */
   tail: string;
+
+  /**
+   * Which file the tool blamed, and the line it quoted back. Present for compile
+   * errors, and the difference between "the model wrote broken code" and "the
+   * bundler parsed the file while it was still being written" - see compileError.
+   */
+  detail?: CompileErrorDetail;
 }
 
 export interface BootOutcome {
@@ -81,12 +89,35 @@ function settleBootWatch(ready: boolean, signal?: TerminalSignal) {
 }
 
 function publish(match: TerminalErrorMatch): TerminalSignal {
-  const signal: TerminalSignal = { ...match, at: Date.now(), tail: errorTail(buffer) };
+  const tail = errorTail(buffer);
+  const signal: TerminalSignal = { ...match, at: Date.now(), tail, detail: parseCompileError(tail) };
   publishedSignature = terminalErrorSignature(match);
   terminalSignal.set(signal);
   settleBootWatch(false, signal);
 
   return signal;
+}
+
+/**
+ * A bundler writes its complaint first and the `path:line:col` a line or two
+ * later, so the frame the scan would have is often not in the buffer yet when the
+ * match publishes. Retrying on the following chunks costs nothing and is what
+ * makes a deterministic recovery possible at all.
+ */
+function enrichPublishedSignal(chunk: string) {
+  const current = terminalSignal.get();
+
+  if (!current || current.detail) {
+    return;
+  }
+
+  const detail = parseCompileError(`${current.tail}\n${chunk}`);
+
+  if (!detail) {
+    return;
+  }
+
+  terminalSignal.set({ ...current, detail });
 }
 
 /**
@@ -149,6 +180,10 @@ export function ingestTerminalChunk(chunk: string, options: { commandActive?: bo
 
   append(chunk);
 
+  if (options.commandActive) {
+    enrichPublishedSignal(chunk);
+  }
+
   const serverSaysItIsUp = isReadyEvidence(chunk);
 
   if (serverSaysItIsUp) {
@@ -186,6 +221,13 @@ export function ingestTerminalChunk(chunk: string, options: { commandActive?: bo
 
     publish(match);
     publishedHere = true;
+
+    /*
+     * A bundler usually writes the complaint and the `path:line:col` frame in the
+     * same write, so look in this chunk before stopping the scan: this is what lets
+     * a stale-cache error be recognised and cleared without a model turn.
+     */
+    enrichPublishedSignal(chunk);
 
     return;
   }

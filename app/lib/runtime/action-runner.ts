@@ -7,6 +7,7 @@ import { unreachable } from '~/utils/unreachable';
 import type { ActionCallbackData } from './message-parser';
 import { AUTOMATION_ENV, type BoltShell } from '~/utils/shell';
 import { isDevServerCommand } from '~/lib/utils/devServerRestart';
+import { forceRebuildCommand } from '~/lib/utils/compileError';
 import { notifyFileChange } from '~/lib/utils/fileChangeBus';
 import { armDevServerBootWatch, raiseTerminalSignal, recentTerminalOutput } from '~/lib/stores/terminalWatch';
 
@@ -433,7 +434,7 @@ export class ActionRunner {
    * error. Aborting the action first makes both paths ignore it, because
    * `#executeAction` returns early for an aborted action.
    */
-  async restartDevServer(reason: string): Promise<boolean> {
+  async restartDevServer(reason: string, options: { force?: boolean } = {}): Promise<boolean> {
     const devServer = this.#devServer;
 
     if (!devServer) {
@@ -452,7 +453,16 @@ export class ActionRunner {
     devServer.action.abort();
     this.#lastRestartAt = Date.now();
 
-    logger.info(`Restarting dev server (${reason}): ${devServer.command}`);
+    /*
+     * `force` is for the failures a restart alone cannot fix: Vite parses the
+     * project once at boot and caches the result, so a scan that raced a file
+     * write keeps serving an error about a tree that no longer exists. `--force`
+     * tells it to throw that cache away, which is the whole fix when the code was
+     * never broken - and `npm run dev -- --force` forwards it through the script.
+     */
+    const command = options.force ? (forceRebuildCommand(devServer.command) ?? devServer.command) : devServer.command;
+
+    logger.info(`Restarting dev server (${reason}): ${command}`);
 
     /*
      * a restart that leaves nothing listening is exactly as invisible as a first
@@ -462,7 +472,7 @@ export class ActionRunner {
 
     // never resolves for a healthy dev server, so it is intentionally not awaited
     shell
-      .executeCommand(this.runnerId.get(), devServer.command, () => {
+      .executeCommand(this.runnerId.get(), command, () => {
         logger.debug('Aborting restarted dev server');
       })
       .catch((error) => {

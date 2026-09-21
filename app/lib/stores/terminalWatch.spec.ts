@@ -79,6 +79,60 @@ describe('ingestTerminalChunk', () => {
   });
 });
 
+describe('a scan that raced the writes', () => {
+  beforeEach(() => {
+    resetTerminalWatch();
+  });
+
+  it('notices a dev server that said "ready" and then failed its startup scan', () => {
+    /*
+     * This is a real transcript: Vite printed its Local URL first, so every "is it
+     * up" heuristic was satisfied, and only the scan failure that followed says the
+     * preview will stay blank.
+     */
+    ingestTerminalChunk(devCommand, { commandActive: true });
+    ingestTerminalChunk('  VITE v5.4.8  ready in 5652 ms\n  ➜  Local:   http://localhost:5173/\n', {
+      commandActive: true,
+    });
+    ingestTerminalChunk('Error:   Failed to scan for dependencies from entries:\n  /home/project/index.html\n', {
+      commandActive: true,
+    });
+
+    const signal = terminalSignal.get();
+
+    expect(signal?.id).toBe('vite-dep-scan');
+
+    /*
+     * No file is blamed yet: the entry named here (`index.html`) carries no line
+     * number, and the real offender shows up in the parser block printed after it.
+     */
+    expect(signal?.detail).toBeUndefined();
+  });
+
+  it('picks up the blamed file when the bundler prints it a line later', () => {
+    ingestTerminalChunk(devCommand, { commandActive: true });
+    ingestTerminalChunk('  ✘ [ERROR] Expected ")" but found "}"\n', { commandActive: true });
+
+    expect(terminalSignal.get()?.id).toBe('bundler-syntax');
+    expect(terminalSignal.get()?.detail).toBeUndefined();
+
+    ingestTerminalChunk('\n    src/components/TodoList.tsx:35:8:\n      35 │       ))}\n', { commandActive: true });
+
+    expect(terminalSignal.get()?.detail?.file).toBe('src/components/TodoList.tsx');
+    expect(terminalSignal.get()?.detail?.line).toBe(35);
+    expect(terminalSignal.get()?.detail?.quoted).toBe('))}');
+  });
+
+  it('does not mistake a browserslist nag for a failure', () => {
+    ingestTerminalChunk(devCommand, { commandActive: true });
+    ingestTerminalChunk('Browserslist: caniuse-lite is outdated. Please run:\n  npx update-browserslist-db@latest\n', {
+      commandActive: true,
+    });
+  });
+
+  expect(terminalSignal.get()).toBeUndefined();
+});
+
 describe('raiseTerminalSignal', () => {
   beforeEach(() => {
     resetTerminalWatch();

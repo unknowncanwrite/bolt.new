@@ -47,7 +47,7 @@ project, please check the [project management guide](./PROJECT.md) to get starte
 - **19+ AI Provider Integrations** - OpenAI, Anthropic, Google, Groq, xAI, DeepSeek, Mistral, Cohere, Together, Perplexity, HuggingFace, Ollama, LM Studio, OpenRouter, Moonshot, Hyperbolic, GitHub Models, Amazon Bedrock, OpenAI-like
 - **Electron Desktop App** - Native desktop experience with full functionality
 - **Advanced Deployment Options** - Netlify, Vercel, and GitHub Pages deployment
-- **Autonomous preview lifecycle** - dev server restarts when a config change needs it, captured errors are auto-fixed by the model, and deploys only happen on click
+- **Autonomous preview lifecycle** - dev server restarts when a config change needs it, a stale bundler cache is cleared without bothering the model, captured errors are auto-fixed by the model, and deploys only happen on click
 - **Supabase Integration** - Database management and query capabilities
 - **Data Visualization & Analysis** - Charts, graphs, and data analysis tools
 - **MCP (Model Context Protocol)** - Enhanced AI tool integration
@@ -124,6 +124,20 @@ Three defaults are tuned for someone who is not going to read the terminal:
   server says it is listening again. Reading is limited to moments when a
   command is attached to the shell, so old scrollback containing the word
   `Cannot find module` cannot wake the model up for nothing.
+
+- **A bundler error about code that is fine gets cleared, not escalated.** A Vite dev
+  server parses the whole project once, at boot, while Bolt is still writing files -
+  so that scan can die on a snapshot that no longer exists: `Failed to scan for
+  dependencies from entries`, `Expected ")" but found "}"`, and then the same error
+  replayed out of the transform cache on every request, for a file that compiles
+  cleanly. The complaint is parsed for the file and line it blames, that line is
+  compared with what the file contains now, and the brackets are walked (strings,
+  comments, regexes and template holes skipped). When the file turns out to be fine
+  the fix is the boring one: restart with `--force` so the cache is thrown away. No
+  model turn, no rewrite of correct code, one line in Logs saying what happened. The
+  error is allowed to report again after a restart and the cache is cleared at most
+  twice per line, so a wrong call delays the model instead of hiding a real failure
+  from it.
 
 The fix request also states, in as many words, that the terminal belongs to the
 model: install the missing package, free the port, delete the stale lockfile,

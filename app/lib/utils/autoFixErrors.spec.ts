@@ -29,6 +29,22 @@ const ready: AutoFixCandidate = {
 const decide = (override: Partial<typeof ready> = {}) => decideAutoFix({ ...ready, ...override });
 
 describe('decideAutoFix', () => {
+  it('leaves a prompt-over-window failure to the human, not the model', () => {
+    /*
+     * Sending this to the model would loop: the retry carries the same oversized
+     * context, so it fails the same way. The request itself is trimmed instead.
+     */
+    expect(
+      decide({
+        alert: {
+          title: 'Too much context for this model',
+          description: 'Prompt exceed the maximum length of the model',
+          content: '',
+        },
+      }),
+    ).toEqual({ action: 'ask-user', reason: 'no-alert' });
+  });
+
   it('acts on its own instead of asking the user', () => {
     expect(decide()).toEqual({ action: 'auto-fix', reason: 'go' });
   });

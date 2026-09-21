@@ -131,6 +131,26 @@ start the dev server again — then keep reading the output until the app says i
 is listening, or say what is still blocking it. There is no "run this command
 yourself" step in between.
 
+**Long chats are trimmed to fit the model, instead of failing.** Providers price
+input and output against the same window, and Bolt had only ever guarded the output
+half: after a few dozen files, each quoted in full inside its artifact, the next turn
+would come back as `Prompt exceed the maximum length of the model` (or
+`context_length_exceeded`, or `prompt is too long`) - a red box about arithmetic. Now
+the request is measured before it is sent and reduced in the least damaging order: the
+code-context buffer first, then the oldest turns, then the middle of whatever is still
+too big (its beginning and end stay, because that is where the question is). The
+newest message is never dropped or emptied, the model's window gets a 15% safety
+margin because catalogues round up, and a `context` progress line says what was
+trimmed, so a shorter answer is not a mystery. If a provider still refuses, the alert
+says what actually helps (a larger-context model or a new chat) and the auto-fix stays
+out of it, since re-sending the same oversized payload cannot fix it.
+
+**The model picker survives a bad provider.** One expired key, one gateway mid-restart,
+or settings written by an older build used to turn `GET /api/models` into a 500 and the
+picker into "Error fetching models". Per-provider discovery failures were always meant
+to fall back to the built-in list; now the whole route does too, with a `warning` field
+saying live discovery did not load.
+
 **A build that stops early continues on its own.** Some models end the message after
 scaffolding - `package.json`, one `npm install`, and a clean "I'm done" - which leaves
 you with one file and nothing to preview, and the provider reports no error, because

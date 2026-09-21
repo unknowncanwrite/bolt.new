@@ -87,7 +87,14 @@ export class LLMManager {
     let enabledProviders = Array.from(this._providers.values()).map((p) => p.name);
 
     if (providerSettings && Object.keys(providerSettings).length > 0) {
-      enabledProviders = enabledProviders.filter((p) => providerSettings[p].enabled);
+      /*
+       * A provider missing from the stored settings is not a disabled one: the
+       * cookie is written by an older visit as often as not, and any provider
+       * added since then simply has no entry. Reading `.enabled` off `undefined`
+       * threw, which took the whole model list down with it - a blank picker and
+       * an "error fetching models" toast, for a key that was never there.
+       */
+      enabledProviders = enabledProviders.filter((p) => providerSettings[p]?.enabled ?? true);
     }
 
     // Get dynamic models from all providers that support them

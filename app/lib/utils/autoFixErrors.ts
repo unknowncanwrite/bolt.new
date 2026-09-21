@@ -113,6 +113,14 @@ const NOT_ACTIONABLE = [
   /user aborted|aborted by user|aborterror/i,
   /Failed to fetch dynamically imported module/i, // a cancelled load, not a code error
   /ERR_BLOCKED_BY_CLIENT/i,
+
+  /*
+   * A prompt over the model's window is not a bug in the generated code, and the
+   * model cannot fix it: every retry it wrote would carry the same oversized
+   * context. The app trims the request instead (see contextBudget), and the alert
+   * tells the person what actually helps.
+   */
+  /exceed(?:ed)? the maximum length|context_length_exceeded|prompt is too long|maximum context length/i,
 ];
 
 export function isActionableError(alert: AutoFixCandidate['alert']): boolean {

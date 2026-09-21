@@ -8,6 +8,9 @@ interface ModelsResponse {
   modelList: ModelInfo[];
   providers: ProviderInfo[];
   defaultProvider: ProviderInfo;
+
+  /** Set when live discovery failed and only the built-in catalogues came back. */
+  warning?: string;
 }
 
 let cachedProviders: ProviderInfo[] | null = null;
@@ -61,30 +64,46 @@ export async function loader({
   const { providers, defaultProvider } = getProviderInfo(llmManager);
 
   let modelList: ModelInfo[] = [];
+  let warning: string | undefined;
 
-  if (params.provider) {
-    // Only update models for the specific provider
-    const provider = llmManager.getProvider(params.provider);
+  try {
+    if (params.provider) {
+      // Only update models for the specific provider
+      const provider = llmManager.getProvider(params.provider);
 
-    if (provider) {
-      modelList = await llmManager.getModelListFromProvider(provider, {
+      if (provider) {
+        modelList = await llmManager.getModelListFromProvider(provider, {
+          apiKeys,
+          providerSettings,
+          serverEnv: context.cloudflare?.env,
+        });
+      }
+    } else {
+      // Update all models
+      modelList = await llmManager.updateModelList({
         apiKeys,
         providerSettings,
         serverEnv: context.cloudflare?.env,
       });
     }
-  } else {
-    // Update all models
-    modelList = await llmManager.updateModelList({
-      apiKeys,
-      providerSettings,
-      serverEnv: context.cloudflare?.env,
-    });
+  } catch (error: any) {
+    /*
+     * A model list is a convenience, not a critical path: one provider's bad
+     * answer (an expired key, a gateway mid-restart, a setting written by an
+     * older build) must not leave the picker empty. Fall back to what every
+     * provider ships statically, and say that the live list did not load.
+     */
+    warning = error?.message ?? 'Model discovery failed';
+    modelList = llmManager
+      .getAllProviders()
+      .flatMap((provider) => provider.staticModels ?? [])
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   return json<ModelsResponse>({
     modelList,
     providers,
     defaultProvider,
+    ...(warning ? { warning } : {}),
   });
 }

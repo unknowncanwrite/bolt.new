@@ -18,6 +18,8 @@ export default function LlmErrorAlert({ alert, clearAlert }: Props) {
         return 'i-ph:clock-duotone';
       case 'quota':
         return 'i-ph:warning-circle-duotone';
+      case 'context_length':
+        return 'i-ph:brain-duotone';
       default:
         return 'i-ph:warning-duotone';
     }
@@ -31,6 +33,8 @@ export default function LlmErrorAlert({ alert, clearAlert }: Props) {
         return `Rate limit exceeded for ${provider}. Please wait before retrying.`;
       case 'quota':
         return `Quota exceeded for ${provider}. Please check your account limits.`;
+      case 'context_length':
+        return `The conversation outgrew ${provider}'s context window. Older turns are trimmed automatically, so a larger-context model or a new chat is what actually helps here.`;
       default:
         return 'An error occurred while processing your request.';
     }

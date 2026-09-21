@@ -1,4 +1,5 @@
 import { convertToCoreMessages, streamText as _streamText, type Message } from 'ai';
+import { describeContextTrim, fitToContextWindow } from '~/lib/utils/contextBudget';
 import { MAX_TOKENS, PROVIDER_COMPLETION_LIMITS, isReasoningModel, type FileMap } from './constants';
 import { getSystemPrompt } from '~/lib/common/prompts/prompts';
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, MODIFICATIONS_TAG_NAME, PROVIDER_LIST, WORK_DIR } from '~/utils/constants';
@@ -273,6 +274,25 @@ export async function streamText(props: {
     ),
   );
 
+  /*
+   * Everything above sizes the *reply*; nothing sized the *request*. A long chat -
+   * every file quoted in full in its own artifact, plus a code-context buffer -
+   * eventually trips the provider's input limit, and the user is told "Prompt
+   * exceed the maximum length of the model" for arithmetic the app could have done
+   * itself. So the payload is measured against the window and trimmed here, in
+   * the least damaging order, before a request is made at all.
+   */
+  const systemForRequest = chatMode === 'build' ? systemPrompt : discussPrompt();
+  const contextFit = fitToContextWindow(processedMessages as any, {
+    systemPrompt: systemForRequest,
+    maxTokenAllowed: modelDetails.maxTokenAllowed,
+    completionTokens: safeMaxTokens,
+  });
+
+  if (contextFit.report.trimmed) {
+    logger.warn(`Trimmed the request to fit ${modelDetails.name}: ${describeContextTrim(contextFit.report)}`);
+  }
+
   const streamParams = {
     model: provider.getModelInstance({
       model: modelDetails.name,
@@ -280,9 +300,9 @@ export async function streamText(props: {
       apiKeys,
       providerSettings,
     }),
-    system: chatMode === 'build' ? systemPrompt : discussPrompt(),
+    system: contextFit.systemPrompt,
     ...tokenParams,
-    messages: convertToCoreMessages(processedMessages as any),
+    messages: convertToCoreMessages(contextFit.messages as any),
     ...filteredOptions,
 
     // Set temperature to 1 for reasoning models (required by OpenAI API)
@@ -307,5 +327,13 @@ export async function streamText(props: {
     ),
   );
 
-  return await _streamText(streamParams);
+  const result = await _streamText(streamParams);
+
+  /*
+   * The route turns this into a progress line: a model that answered from a
+   * shorter history should say so, not look like it forgot something.
+   */
+  (result as any).contextTrimReport = contextFit.report;
+
+  return result;
 }

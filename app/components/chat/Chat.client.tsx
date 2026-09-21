@@ -10,6 +10,7 @@ import { chatStore } from '~/lib/stores/chat';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { autoFixEnabled, autoFixTracker, recordAutoFixAttempt, resetAutoFixAttempts } from '~/lib/stores/autoFix';
 import { resetTerminalSignalDedupe } from '~/lib/stores/terminalWatch';
+import { isContextOverflowError } from '~/lib/utils/contextBudget';
 import {
   MAX_AUTO_FIX_ATTEMPTS,
   buildFixRequestMessage,
@@ -324,6 +325,9 @@ export const ChatImpl = memo(
         } else if (errorInfo.message.toLowerCase().includes('quota')) {
           errorType = 'quota';
           title = 'Quota Exceeded';
+        } else if (isContextOverflowError(errorInfo.message)) {
+          errorType = 'context_length';
+          title = 'Too much context for this model';
         } else if (errorInfo.statusCode >= 500) {
           errorType = 'network';
           title = 'Server Error';
@@ -343,7 +347,10 @@ export const ChatImpl = memo(
         setLlmErrorAlert({
           type: 'error',
           title,
-          description: errorInfo.message,
+          description:
+            errorType === 'context_length'
+              ? `${errorInfo.message}\n\nOlder turns are trimmed automatically as a chat grows, so this only happens when a single message is already bigger than the model's window. Shorten what you pasted, pick a model with a larger context, or start a new chat for this project - the files are all still here.`
+              : errorInfo.message,
           provider: provider.name,
           errorType,
         });

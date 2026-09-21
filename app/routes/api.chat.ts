@@ -14,6 +14,7 @@ import type { DesignScheme } from '~/types/design-scheme';
 import { MCPService } from '~/lib/services/mcpService';
 import { StreamRecoveryManager } from '~/lib/.server/llm/stream-recovery';
 import { detectIncompleteBuild } from '~/lib/utils/buildCompleteness';
+import { describeContextTrim } from '~/lib/utils/contextBudget';
 
 export async function action(args: ActionFunctionArgs) {
   return chatAction(args);
@@ -380,6 +381,18 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
           summary,
           messageSliceId,
         });
+
+        const trimReport = (result as any).contextTrimReport;
+
+        if (trimReport?.trimmed) {
+          dataStream.writeData({
+            type: 'progress',
+            label: 'context',
+            status: 'complete',
+            order: progressCounter++,
+            message: describeContextTrim(trimReport),
+          } satisfies ProgressAnnotation);
+        }
 
         (async () => {
           for await (const part of result.fullStream) {

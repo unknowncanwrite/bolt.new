@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CONTEXT_BUFFER_MARKER,
   MIN_INPUT_TOKENS,
   describeContextTrim,
   estimateMessageTokens,
@@ -106,13 +107,13 @@ describe('fitToContextWindow', () => {
 
   it('drops the code-context buffer before it drops any conversation', () => {
     const hugeContext = `${'index.ts | export const app = 1;\n'.repeat(3000)}`;
-    const systemPrompt = `You are Bolt.\n\nBelow is the context.\nCONTEXT BUFFER:\n---\n${hugeContext}\n---\n`;
+    const systemPrompt = `You are Bolt.\n\nBelow is the context.\n${CONTEXT_BUFFER_MARKER}\n---\n${hugeContext}\n---\n`;
     const messages = [{ role: 'user', content: 'fix the header' }];
 
     const result = fitToContextWindow(messages, { systemPrompt, maxTokenAllowed: 32000, completionTokens: 8192 });
 
     expect(result.report.contextBufferDropped).toBe(true);
-    expect(result.systemPrompt).not.toContain('CONTEXT BUFFER');
+    expect(result.systemPrompt).not.toContain(CONTEXT_BUFFER_MARKER);
     expect(result.systemPrompt).toContain('You are Bolt.');
     expect(result.messages).toEqual(messages);
   });

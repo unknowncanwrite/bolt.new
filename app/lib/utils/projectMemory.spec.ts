@@ -6,6 +6,7 @@ import {
   MEMORY_PATH,
   bulletKey,
   classifyBullet,
+  cleanBullet,
   countBullets,
   describeMerge,
   extractCandidateDecisions,
@@ -13,6 +14,7 @@ import {
   isMemoryEnabled,
   memoryMirrorKey,
   memoryPromptBlock,
+  memoryReadBlock,
   mergeMemory,
   parseMemory,
   readMemoryFromFiles,
@@ -54,6 +56,34 @@ describe('parseMemory / formatMemory', () => {
     }
   });
 
+  it('reads a file that numbered its notes, used CRLF, or left a stray marker', () => {
+    const doc = parseMemory(
+      '# Project memory\r\n\r\n## Decisions\r\n1. use pnpm, not npm\r\n2) the port comes from the environment\r\n- - a line with two markers\r\n',
+    );
+
+    expect(doc.sections[0].bullets).toEqual([
+      'use pnpm, not npm',
+      'the port comes from the environment',
+      'a line with two markers',
+    ]);
+  });
+
+  it('keeps a heading we do not own, prose and all', () => {
+    const text =
+      '# Project memory\n\n## Notes\n\nsome paragraph the model wrote under its own heading\n\n- never commit the seed script, it has a token\n';
+    const doc = parseMemory(text);
+    const notes = doc.sections.find((section) => section.name === 'Notes');
+
+    expect(notes?.bullets).toEqual(['never commit the seed script, it has a token']);
+    expect(notes?.raw).toEqual(['some paragraph the model wrote under its own heading']);
+
+    const again = formatMemory(doc);
+
+    expect(again).toContain('## Notes');
+    expect(again).toContain('some paragraph the model wrote under its own heading');
+    expect(parseMemory(again).sections.find((section) => section.name === 'Notes')?.raw).toEqual(notes?.raw);
+  });
+
   it('round-trips through the file format', () => {
     const once = formatMemory(parseMemory(sample));
 
@@ -77,6 +107,35 @@ describe('classifyBullet', () => {
     ['Confirmed: the build passes with 239 tests', 'Verified'],
   ])('%s -> %s', (bullet, name) => {
     expect(classifyBullet(bullet)).toBe(name);
+  });
+});
+
+describe('cleanBullet', () => {
+  it('takes the list marker off whatever the model or a person used', () => {
+    expect(cleanBullet('-  use pnpm   ')).toBe('use pnpm');
+    expect(cleanBullet('* use pnpm')).toBe('use pnpm');
+    expect(cleanBullet('+   use pnpm')).toBe('use pnpm');
+    expect(cleanBullet('3. use pnpm')).toBe('use pnpm');
+    expect(cleanBullet('4) use pnpm')).toBe('use pnpm');
+    expect(cleanBullet('- - use pnpm')).toBe('use pnpm');
+  });
+
+  it('folds a wrapped line into one bullet', () => {
+    expect(cleanBullet('use pnpm\n  for every install')).toBe('use pnpm for every install');
+  });
+
+  it('cuts at a word rather than mid-token when a note is too long', () => {
+    const note = cleanBullet(`pnpm ${'workspaces '.repeat(40)}forever`);
+
+    expect(note.length).toBeLessThanOrEqual(220);
+    expect(note.startsWith('pnpm workspaces')).toBe(true);
+    expect(note.endsWith('\u2026')).toBe(true);
+  });
+
+  it('survives an empty or marker-only value', () => {
+    expect(cleanBullet('')).toBe('');
+    expect(cleanBullet('   \n  ')).toBe('');
+    expect(cleanBullet('- ')).toBe('');
   });
 });
 
@@ -130,6 +189,18 @@ describe('mergeMemory', () => {
     expect(describeMerge(merge)).toContain('oldest dropped');
   });
 
+  it('merges into a file that has its own headings without rewriting them', () => {
+    const existing =
+      '# Project memory\n\nWhat the code does not show.\n\n## Decisions\n- use pnpm for installs\n\n## Notes\n\nprose the project wrote for itself\n\n- keep the seed script out of git\n';
+    const text = mergeMemory(existing, ['the gateway needs the port from the environment']).text;
+
+    expect(text).toContain('prose the project wrote for itself');
+    expect(text).toContain('- keep the seed script out of git');
+    expect(text).toContain('- use pnpm for installs');
+    expect(text).toContain('- the gateway needs the port from the environment');
+    expect(text).not.toContain('- - ');
+  });
+
   it('creates a file from scratch when there is none', () => {
     const merge = mergeMemory(undefined, ['We ship without a database because the free tier has none']);
 
@@ -169,6 +240,37 @@ The dev server must read the port from the environment, or Render returns 502.`;
 
     expect(capped.length).toBeLessThanOrEqual(4);
     expect(mergeMemory(undefined, capped).added.length).toBe(capped.length);
+  });
+
+  it('never files generated code, model thinking, or a table row as a decision', () => {
+    const turn = [
+      '<boltArtifact id="a" title="t">',
+      '<boltAction type="file" filePath="x.ts">// we went with yarn instead of npm because it is faster</boltAction>',
+      '</boltArtifact>',
+      '<div class="__boltThought__">we should switch to bun for everything from now on</div>',
+      '| option | chosen |',
+      '| --- | --- |',
+      '| bun | we use bun only, never pnpm |',
+      'We went with an in-memory store instead of a cache because the free tier has none.',
+    ].join('\n');
+    const found = extractCandidateDecisions(turn);
+
+    expect(found.some((line) => line.includes('yarn'))).toBe(false);
+    expect(found.some((line) => line.includes('bun'))).toBe(false);
+    expect(found.some((line) => line.includes('| option'))).toBe(false);
+    expect(found.some((line) => line.includes('in-memory store'))).toBe(true);
+  });
+
+  it('truncates a note that runs long instead of dropping it', () => {
+    const found = extractCandidateDecisions(
+      'We went with pnpm workspaces instead of npm because ' +
+        'the install step is shared and slow '.repeat(14) +
+        'so nobody runs npm here',
+    );
+
+    expect(found.length).toBe(1);
+    expect(found[0].length).toBeLessThanOrEqual(221);
+    expect(found[0].endsWith('\u2026')).toBe(true);
   });
 
   it('returns nothing for a transcript with no decisions in it', () => {
@@ -251,5 +353,43 @@ describe('preferences', () => {
   it('mirrors per chat so a reload keeps the notes', () => {
     expect(memoryMirrorKey('abc')).toBe('bolt:project-memory:abc');
     expect(memoryMirrorKey(undefined)).toBe('bolt:project-memory:default');
+  });
+});
+
+describe('the prompt budget', () => {
+  const bloated = `# Project memory\n\n## Decisions\n${Array.from({ length: 200 }, (_, i) => `- decision ${i}: a note long enough to matter for the budget arithmetic here`).join('\n')}\n`;
+
+  it('embeds an over-budget file minus its oldest notes, not its newest', () => {
+    const block = memoryPromptBlock(bloated);
+
+    expect(block).toContain('decision 199');
+    expect(block).not.toContain('- decision 0:');
+    expect(block.length).toBeLessThan(6000 + 2200);
+    expect(block).toContain('trimmed to fit this turn');
+  });
+
+  it('leaves a file that fits alone, formatting and all', () => {
+    const own =
+      '# Project memory\n\n## Notes\n1. use pnpm, not npm\n\nsome prose the model wrote under a heading of its own\n';
+    const block = memoryPromptBlock(own);
+
+    expect(block).toContain('1. use pnpm, not npm');
+    expect(block).toContain('some prose the model wrote under a heading of its own');
+  });
+
+  it('truncates rather than drops when there are no bullets left to trim', () => {
+    const prose = `# Project memory\n\n## Notes\n${'a very long paragraph about this repo that keeps going and going. '.repeat(200)}`;
+    const block = memoryPromptBlock(prose);
+
+    expect(block).toContain('…');
+    expect(block.length).toBeLessThan(6000 + 2200);
+  });
+
+  it('says the same thing when Discuss mode reads the file', () => {
+    const block = memoryReadBlock(bloated);
+
+    expect(block).toContain('do not try to edit the file');
+    expect(block).toContain('decision 199');
+    expect(block).not.toContain('- decision 0:');
   });
 });

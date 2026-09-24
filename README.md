@@ -173,7 +173,9 @@ nothing has been recorded yet, using a local extraction pass, so clicking it cos
 tokens and the file opens for you to read. A `memory` progress line says how many
 notes a turn carried in, and Settings -> Features has the switch (default on; off
 means the first turn costs nothing at all). Rough cost when there is something to say:
-~330 tokens a turn, capped at 6 KB of notes.
+~330 tokens a turn. A file that outgrows 6 KB sends its oldest notes to the bottom of
+the view - never of the file - and says so in the prompt, so the cost stays bounded
+without a silent edit.
 Why this exists: the honest answer to "too much context" used to be *start a new chat -
 the files are all still here*. The files are. The decisions were not.
 

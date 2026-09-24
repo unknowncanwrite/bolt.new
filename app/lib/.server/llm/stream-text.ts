@@ -1,5 +1,10 @@
 import { convertToCoreMessages, streamText as _streamText, type Message } from 'ai';
-import { describeContextTrim, fitToContextWindow } from '~/lib/utils/contextBudget';
+import {
+  CONTEXT_BUFFER_MARKER,
+  describeContextTrim,
+  fitToContextWindow,
+  neutraliseBufferMarker,
+} from '~/lib/utils/contextBudget';
 import { MAX_TOKENS, PROVIDER_COMPLETION_LIMITS, isReasoningModel, type FileMap } from './constants';
 import { getSystemPrompt } from '~/lib/common/prompts/prompts';
 import { DEFAULT_MODEL, DEFAULT_PROVIDER, MODIFICATIONS_TAG_NAME, PROVIDER_LIST, WORK_DIR } from '~/utils/constants';
@@ -173,7 +178,17 @@ export async function streamText(props: {
    * trimmed-away memory file is the failure mode the feature exists to prevent.
    */
   const isDiscussion = chatMode === 'discuss';
-  const memoryContent = memoryEnabled ? readMemoryFromFiles(files) : undefined;
+
+  /*
+   * Memory is text a repo wrote, not text the app wrote, so it gets the same
+   * treatment as any other embedded content: the buffer sentinel inside a note must
+   * not become the seam the trimmer cuts on.
+   */
+  const memoryContent = (() => {
+    const raw = memoryEnabled ? readMemoryFromFiles(files) : undefined;
+
+    return raw === undefined ? undefined : neutraliseBufferMarker(raw);
+  })();
 
   if (memoryEnabled && memoryContent && !isDiscussion) {
     systemPrompt = `${systemPrompt}\n\n${memoryPromptBlock(memoryContent)}`;
@@ -192,7 +207,7 @@ export async function streamText(props: {
     systemPrompt = `${systemPrompt}
 
     Below is the artifact containing the context loaded into context buffer for you to have knowledge of and might need changes to fullfill current user request.
-    CONTEXT BUFFER:
+    ${CONTEXT_BUFFER_MARKER}
     ---
     ${codeContext}
     ---

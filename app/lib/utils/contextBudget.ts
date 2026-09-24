@@ -149,10 +149,26 @@ export interface ContextFitResult<Message> {
   report: ContextFitReport;
 }
 
-const CONTEXT_BUFFER_MARKER = 'CONTEXT BUFFER:';
+/**
+ * A sentinel, not a phrase. `CONTEXT BUFFER:` was: plausible text for a project's
+ * own notes, code comments or README to contain, and the excision below runs against
+ * the whole system prompt - so a file that happened to say it could make the trimmer
+ * eat the prompt from the wrong place. Something a model would never write on
+ * purpose is the safer seam.
+ */
+export const CONTEXT_BUFFER_MARKER = '<<<BOLT_CONTEXT_BUFFER>>>';
+
+/** The marker, its fences and the quoted files between them. */
+const CONTEXT_BUFFER_BLOCK = new RegExp(
+  `${CONTEXT_BUFFER_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\n\\s*---\\s*\\n[\\s\\S]*?\\n\\s*---\\s*\\n?`,
+);
+
+/** Strips the sentinel out of text that is being embedded in the prompt. */
+export function neutraliseBufferMarker(text: string): string {
+  return text.split(CONTEXT_BUFFER_MARKER).join('[[context buffer marker]]');
+}
 
 /** The label, its opening fence, the quoted files, and the closing fence. */
-const CONTEXT_BUFFER_BLOCK = /CONTEXT BUFFER:\s*\n\s*---\s*\n[\s\S]*?\n\s*---\s*\n?/;
 
 /**
  * Make the payload fit. Reduction order is the order of least harm:

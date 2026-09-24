@@ -21,7 +21,9 @@ export async function selectContext(props: {
   providerSettings?: Record<string, IProviderSetting>;
   promptId?: string;
   contextOptimization?: boolean;
-  summary: string;
+
+  /** Optional: a chat can select files without ever having been summarised. */
+  summary?: string;
   onFinish?: (resp: GenerateTextResult<Record<string, CoreTool<any, any>>, never>) => void;
 }) {
   const { messages, env: serverEnv, apiKeys, files, providerSettings, summary, onFinish } = props;
@@ -106,7 +108,7 @@ export async function selectContext(props: {
     context = createFilesContext(contextFiles);
   }
 
-  const summaryText = `Here is the summary of the chat till now: ${summary}`;
+  const summaryText = summary ? `Here is the summary of the chat till now: ${summary}` : '';
 
   const extractTextContent = (message: Message) =>
     Array.isArray(message.content)

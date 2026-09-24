@@ -2,7 +2,8 @@ import { generateText, type CoreTool, type GenerateTextResult, type Message } fr
 import ignore from 'ignore';
 import type { IProviderSetting } from '~/types/model';
 import { IGNORE_PATTERNS, type FileMap } from './constants';
-import { DEFAULT_MODEL, DEFAULT_PROVIDER, PROVIDER_LIST } from '~/utils/constants';
+import { DEFAULT_MODEL, DEFAULT_PROVIDER, PROVIDER_LIST, WORK_DIR } from '~/utils/constants';
+import { MEMORY_PATH } from '~/lib/utils/projectMemory';
 import { createFilesContext, extractCurrentContext, extractPropertiesFromMessage, simplifyBoltActions } from './utils';
 import { createScopedLogger } from '~/utils/logger';
 import { LLMManager } from '~/lib/modules/llm/manager';
@@ -233,12 +234,39 @@ export async function selectContext(props: {
   // generateText({
 }
 
+/**
+ * Which files in the payload are eligible for the context.
+ *
+ * `ignore` only accepts relative paths, and Bolt's keys are workdir-prefixed, so the
+ * prefix is what gets stripped first. The fallback strip of leading slashes is not
+ * cosmetic: a key that arrives *without* the prefix (a hand-written entry, a project
+ * imported from disk) used to make `ig.ignores` throw "path should be a
+ * `path.relative()`d string", and that exception escaped the filter and failed the
+ * whole chat request - one odd path in the map was enough to make every turn error.
+ */
 export function getFilePaths(files: FileMap) {
-  let filePaths = Object.keys(files);
-  filePaths = filePaths.filter((x) => {
-    const relPath = x.replace('/home/project/', '');
+  const keys = Object.keys(files);
+  const prefix = `${WORK_DIR}/`;
+
+  const workdirWithoutSlash = WORK_DIR.replace(/^\/+/, '');
+
+  return keys.filter((key) => {
+    const relPath = key.startsWith(prefix) ? key.slice(prefix.length) : key.replace(/^\/+/, '');
+
+    // the project root itself is not a file, however it happens to be keyed
+    if (!relPath || relPath === workdirWithoutSlash) {
+      return false;
+    }
+
+    /*
+     * Project memory is injected under its own heading, with rules for maintaining
+     * it, so it is left out of the file context: the same notes twice in one prompt
+     * is a token bill and an invitation to "merge" two copies of themselves.
+     */
+    if (relPath === MEMORY_PATH || relPath.endsWith(`/${MEMORY_PATH}`)) {
+      return false;
+    }
+
     return !ig.ignores(relPath);
   });
-
-  return filePaths;
 }

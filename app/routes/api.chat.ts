@@ -10,6 +10,7 @@ import type { ContextAnnotation, ProgressAnnotation } from '~/types/context';
 import { WORK_DIR } from '~/utils/constants';
 import { createSummary } from '~/lib/.server/llm/create-summary';
 import { extractPropertiesFromMessage } from '~/lib/.server/llm/utils';
+import { countBullets, readMemoryFromFiles } from '~/lib/utils/projectMemory';
 import type { DesignScheme } from '~/types/design-scheme';
 import { MCPService } from '~/lib/services/mcpService';
 import { StreamRecoveryManager } from '~/lib/.server/llm/stream-recovery';
@@ -49,24 +50,34 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
     },
   });
 
-  const { messages, files, promptId, contextOptimization, supabase, chatMode, designScheme, maxLLMSteps } =
-    await request.json<{
-      messages: Messages;
-      files: any;
-      promptId?: string;
-      contextOptimization: boolean;
-      chatMode: 'discuss' | 'build';
-      designScheme?: DesignScheme;
-      supabase?: {
-        isConnected: boolean;
-        hasSelectedProject: boolean;
-        credentials?: {
-          anonKey?: string;
-          supabaseUrl?: string;
-        };
+  const {
+    messages,
+    files,
+    promptId,
+    contextOptimization,
+    supabase,
+    chatMode,
+    designScheme,
+    maxLLMSteps,
+    memoryEnabled,
+  } = await request.json<{
+    messages: Messages;
+    files: any;
+    promptId?: string;
+    contextOptimization: boolean;
+    chatMode: 'discuss' | 'build';
+    designScheme?: DesignScheme;
+    supabase?: {
+      isConnected: boolean;
+      hasSelectedProject: boolean;
+      credentials?: {
+        anonKey?: string;
+        supabaseUrl?: string;
       };
-      maxLLMSteps: number;
-    }>();
+    };
+    maxLLMSteps: number;
+    memoryEnabled?: boolean;
+  }>();
 
   const cookieHeader = request.headers.get('Cookie');
   const apiKeys = JSON.parse(parseCookies(cookieHeader || '').apiKeys || '{}');
@@ -331,6 +342,7 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
               options,
               apiKeys,
               files,
+              memoryEnabled,
               providerSettings,
               promptId,
               contextOptimization,
@@ -380,7 +392,25 @@ async function chatAction({ context, request }: ActionFunctionArgs) {
           designScheme,
           summary,
           messageSliceId,
+          memoryEnabled,
         });
+
+        /*
+         * Say so when notes were carried in: a model that answers with a decision the
+         * project already made looks like it is ignoring the person, and the answer is
+         * usually "it read the memory file", which should be visible, not implied.
+         */
+        const carriedNotes = memoryEnabled === false ? 0 : countBullets(readMemoryFromFiles(files));
+
+        if (carriedNotes > 0) {
+          dataStream.writeData({
+            type: 'progress',
+            label: 'memory',
+            status: 'complete',
+            order: progressCounter++,
+            message: `${carriedNotes} project note${carriedNotes === 1 ? '' : 's'} carried from .bolt/memory.md`,
+          } satisfies ProgressAnnotation);
+        }
 
         const trimReport = (result as any).contextTrimReport;
 

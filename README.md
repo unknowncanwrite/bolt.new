@@ -159,6 +159,24 @@ trimmed, so a shorter answer is not a mystery. If a provider still refuses, the 
 says what actually helps (a larger-context model or a new chat) and the auto-fix stays
 out of it, since re-sending the same oversized payload cannot fix it.
 
+**Decisions are kept in the project, so a new chat still knows them.** Borrowed from
+[firstmate](https://github.com/kunchenguid/firstmate)'s `/stow`: the things a codebase
+does not show - a choice made between two viable options, a constraint, a trap that
+already bit once - are filed in `.bolt/memory.md`, and that file is re-read on every
+turn, under its own heading, so it is the one part of the prompt the context trimmer
+will never discard. It is an ordinary project file, which is the point: it survives a
+reload, it goes into the exported zip and the GitHub repo, a cloned repo brings its
+notes back into a brand new chat, and anyone can open it and delete what is wrong.
+The model maintains it as it works (append, never rewrite - the rules are in its
+prompt); the notebook button next to *Discuss* files what the transcript decided and
+nothing has been recorded yet, using a local extraction pass, so clicking it costs no
+tokens and the file opens for you to read. A `memory` progress line says how many
+notes a turn carried in, and Settings -> Features has the switch (default on; off
+means the first turn costs nothing at all). Rough cost when there is something to say:
+~330 tokens a turn, capped at 6 KB of notes.
+Why this exists: the honest answer to "too much context" used to be *start a new chat -
+the files are all still here*. The files are. The decisions were not.
+
 **The model picker survives a bad provider.** One expired key, one gateway mid-restart,
 or settings written by an older build used to turn `GET /api/models` into a 500 and the
 picker into "Error fetching models". Per-provider discovery failures were always meant

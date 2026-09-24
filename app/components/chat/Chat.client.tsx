@@ -10,6 +10,8 @@ import { chatStore } from '~/lib/stores/chat';
 import { workbenchStore } from '~/lib/stores/workbench';
 import { autoFixEnabled, autoFixTracker, recordAutoFixAttempt, resetAutoFixAttempts } from '~/lib/stores/autoFix';
 import { resetTerminalSignalDedupe } from '~/lib/stores/terminalWatch';
+import { refreshMemoryState, seedMemoryFromMirror } from '~/lib/stores/projectMemory';
+import { readMemoryFromFiles, transcriptText } from '~/lib/utils/projectMemory';
 import { isContextOverflowError } from '~/lib/utils/contextBudget';
 import {
   MAX_AUTO_FIX_ATTEMPTS,
@@ -112,7 +114,8 @@ export const ChatImpl = memo(
       (project) => project.id === supabaseConn.selectedProjectId,
     );
     const supabaseAlert = useStore(workbenchStore.supabaseAlert);
-    const { activeProviders, promptId, autoSelectTemplate, contextOptimizationEnabled } = useSettings();
+    const { activeProviders, promptId, autoSelectTemplate, contextOptimizationEnabled, projectMemoryEnabled } =
+      useSettings();
     const [llmErrorAlert, setLlmErrorAlert] = useState<LlmErrorAlertType | undefined>(undefined);
     const [model, setModel] = useState(() => {
       const savedModel = Cookies.get('selectedModel');
@@ -150,6 +153,7 @@ export const ChatImpl = memo(
         files,
         promptId,
         contextOptimization: contextOptimizationEnabled,
+        memoryEnabled: projectMemoryEnabled,
         chatMode,
         designScheme,
         supabase: {
@@ -225,6 +229,34 @@ export const ChatImpl = memo(
     useEffect(() => {
       sendMessageRef.current = sendMessage;
     });
+
+    /*
+     * Project memory is a file in the project, so it reaches the model on every turn
+     * without special plumbing. What needs plumbing is getting it back: a reload
+     * rebuilds the project from the message history, which only contains notes the
+     * model filed itself, so anything the Stow button wrote is mirrored per chat and
+     * restored here - before the next request, not after it.
+     */
+    useEffect(() => {
+      if (!projectMemoryEnabled || workbenchStore.filesCount === 0) {
+        return;
+      }
+
+      if (readMemoryFromFiles(files) !== undefined) {
+        return;
+      }
+
+      void seedMemoryFromMirror();
+    }, [files, projectMemoryEnabled]);
+
+    /* Keep the badge honest: notes filed, and notes this chat has decided but not filed. */
+    useEffect(() => {
+      if (!projectMemoryEnabled) {
+        return;
+      }
+
+      refreshMemoryState(transcriptText(messages));
+    }, [messages, projectMemoryEnabled]);
 
     /*
      * When the generated app throws, tell the model about it instead of waiting for

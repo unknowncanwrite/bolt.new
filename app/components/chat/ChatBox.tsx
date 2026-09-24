@@ -20,6 +20,10 @@ import type { DesignScheme } from '~/types/design-scheme';
 import type { ElementInfo } from '~/components/workbench/Inspector';
 import { McpTools } from './MCPTools';
 import { WebSearch } from './WebSearch.client';
+import { useStore } from '@nanostores/react';
+import { useSettings } from '~/lib/hooks/useSettings';
+import { describeStow, memoryBullets, memoryBusy, memoryPending, stowTranscript } from '~/lib/stores/projectMemory';
+import { MEMORY_PATH } from '~/lib/utils/projectMemory';
 
 interface ChatBoxProps {
   isModelSettingsCollapsed: boolean;
@@ -66,6 +70,27 @@ interface ChatBoxProps {
 }
 
 export const ChatBox: React.FC<ChatBoxProps> = (props) => {
+  const { projectMemoryEnabled } = useSettings();
+  const pendingNotes = useStore(memoryPending);
+  const filedNotes = useStore(memoryBullets);
+  const stowing = useStore(memoryBusy);
+
+  /*
+   * A button, not a background job: writing into the project is the person's call.
+   * What the click does is merge - the file keeps every note already in it - and the
+   * written file opens, so what was remembered can be read or deleted rather than
+   * taken on trust.
+   */
+  const handleStow = async () => {
+    const result = await stowTranscript();
+
+    if (result.skipped === 'nothing to file') {
+      toast.info(describeStow(result));
+    } else {
+      toast.success(describeStow(result));
+    }
+  };
+
   return (
     <div
       className={classNames(
@@ -305,6 +330,26 @@ export const ChatBox: React.FC<ChatBoxProps> = (props) => {
               >
                 <div className={`i-ph:chats text-xl`} />
                 {props.chatMode === 'discuss' ? <span>Discuss</span> : <span />}
+              </IconButton>
+            )}
+            {props.chatStarted && projectMemoryEnabled && (
+              <IconButton
+                title={
+                  pendingNotes.length > 0
+                    ? `Stow ${pendingNotes.length} decision${pendingNotes.length === 1 ? '' : 's'} into ${MEMORY_PATH}`
+                    : `${MEMORY_PATH} carries ${filedNotes} note${filedNotes === 1 ? '' : 's'} into later chats`
+                }
+                className={classNames('transition-all flex items-center gap-1 px-1.5', {
+                  'bg-bolt-elements-item-backgroundAccent !text-bolt-elements-item-contentAccent':
+                    pendingNotes.length > 0,
+                  'bg-bolt-elements-item-backgroundDefault text-bolt-elements-item-contentDefault':
+                    pendingNotes.length === 0,
+                })}
+                onClick={handleStow}
+                disabled={props.isStreaming === true || stowing}
+              >
+                <div className={`i-ph:${pendingNotes.length > 0 ? 'note-pencil' : 'notebook'} text-xl`} />
+                {pendingNotes.length > 0 ? <span>{pendingNotes.length}</span> : <span />}
               </IconButton>
             )}
             <IconButton

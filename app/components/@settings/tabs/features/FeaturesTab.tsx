@@ -110,10 +110,12 @@ export default function FeaturesTab() {
     autoSelectTemplate,
     isLatestBranch,
     contextOptimizationEnabled,
+    projectMemoryEnabled,
     eventLogs,
     setAutoSelectTemplate,
     enableLatestBranch,
     enableContextOptimization,
+    enableProjectMemory,
     setEventLogs,
     setPromptId,
     promptId,
@@ -128,6 +130,10 @@ export default function FeaturesTab() {
 
     if (contextOptimizationEnabled === undefined) {
       enableContextOptimization(true); // Default: ON - Enable context optimization
+    }
+
+    if (projectMemoryEnabled === undefined) {
+      enableProjectMemory(true); // Default: ON - .bolt/memory.md carries decisions across chats
     }
 
     if (autoSelectTemplate === undefined) {
@@ -164,6 +170,12 @@ export default function FeaturesTab() {
           break;
         }
 
+        case 'projectMemory': {
+          enableProjectMemory(enabled);
+          toast.success(`Project memory ${enabled ? 'enabled' : 'disabled'}`);
+          break;
+        }
+
         case 'eventLogs': {
           setEventLogs(enabled);
           toast.success(`Event logging ${enabled ? 'enabled' : 'disabled'}`);
@@ -174,7 +186,7 @@ export default function FeaturesTab() {
           break;
       }
     },
-    [enableLatestBranch, setAutoSelectTemplate, enableContextOptimization, setEventLogs],
+    [enableLatestBranch, setAutoSelectTemplate, enableContextOptimization, enableProjectMemory, setEventLogs],
   );
 
   const features = {
@@ -202,6 +214,15 @@ export default function FeaturesTab() {
         icon: 'i-ph:brain',
         enabled: contextOptimizationEnabled,
         tooltip: 'Enabled by default for improved AI responses',
+      },
+      {
+        id: 'projectMemory',
+        title: 'Project Memory',
+        description: 'Keep decisions, constraints and gotchas in .bolt/memory.md so later chats know them',
+        icon: 'i-ph:notebook',
+        enabled: projectMemoryEnabled,
+        tooltip:
+          'Enabled by default. The file is part of your project, so it survives a reload, a new chat and a repo clone; it is also the one part of the prompt the context trimmer will not discard.',
       },
       {
         id: 'eventLogs',

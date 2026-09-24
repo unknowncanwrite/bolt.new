@@ -7,6 +7,7 @@ import type { IProviderSetting } from '~/types/model';
 import { PromptLibrary } from '~/lib/common/prompt-library';
 import { allowedHTMLElements } from '~/utils/markdown';
 import { LLMManager } from '~/lib/modules/llm/manager';
+import { countBullets, memoryPromptBlock, memoryReadBlock, readMemoryFromFiles } from '~/lib/utils/projectMemory';
 import { createScopedLogger } from '~/utils/logger';
 import { createFilesContext, extractPropertiesFromMessage } from './utils';
 import { discussPrompt } from '~/lib/common/prompts/discuss-prompt';
@@ -66,6 +67,7 @@ export async function streamText(props: {
   messageSliceId?: number;
   chatMode?: 'discuss' | 'build';
   designScheme?: DesignScheme;
+  memoryEnabled?: boolean;
 }) {
   const {
     messages,
@@ -80,6 +82,7 @@ export async function streamText(props: {
     summary,
     chatMode,
     designScheme,
+    memoryEnabled = true,
   } = props;
   let currentModel = DEFAULT_MODEL;
   let currentProvider = DEFAULT_PROVIDER.name;
@@ -162,6 +165,26 @@ export async function streamText(props: {
         credentials: options?.supabaseConnection?.credentials || undefined,
       },
     }) ?? getSystemPrompt();
+
+  /*
+   * Project memory goes in under its own heading, *before* the context buffer, so
+   * that it is never the thing the request trimmer throws away: these notes are the
+   * reason a later or brand-new chat can behave like it remembers this one, and a
+   * trimmed-away memory file is the failure mode the feature exists to prevent.
+   */
+  const isDiscussion = chatMode === 'discuss';
+  const memoryContent = memoryEnabled ? readMemoryFromFiles(files) : undefined;
+
+  if (memoryEnabled && memoryContent && !isDiscussion) {
+    systemPrompt = `${systemPrompt}\n\n${memoryPromptBlock(memoryContent)}`;
+    logger.debug(`Project memory: ${countBullets(memoryContent)} notes carried into this turn`);
+  } else if (memoryEnabled && !isDiscussion && messages.length >= 2) {
+    /*
+     * Nothing to carry yet, so only tell the model the file is the place for it -
+     * and not on the very first message, where there is nothing decided to record.
+     */
+    systemPrompt = `${systemPrompt}\n\n${memoryPromptBlock(undefined)}`;
+  }
 
   if (chatMode === 'build' && contextFiles && contextOptimization) {
     const codeContext = createFilesContext(contextFiles, true);
@@ -282,7 +305,18 @@ export async function streamText(props: {
    * itself. So the payload is measured against the window and trimmed here, in
    * the least damaging order, before a request is made at all.
    */
-  const systemForRequest = chatMode === 'build' ? systemPrompt : discussPrompt();
+  /*
+   * Discuss mode assembles its own prompt, so appending to `systemPrompt` above
+   * would be appending to something that is thrown away: memory has to be added to
+   * whichever prompt actually goes out. Read-only here, because a discussion is not
+   * supposed to touch the project, and the notes are just as useful when it does not.
+   */
+  let systemForRequest = chatMode === 'build' ? systemPrompt : discussPrompt();
+
+  if (memoryEnabled && isDiscussion && memoryContent) {
+    systemForRequest = `${systemForRequest}\n\n${memoryReadBlock(memoryContent)}`;
+  }
+
   const contextFit = fitToContextWindow(processedMessages as any, {
     systemPrompt: systemForRequest,
     maxTokenAllowed: modelDetails.maxTokenAllowed,
